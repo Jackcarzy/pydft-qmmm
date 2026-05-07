@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import pydft_qmmm.interfaces.psi4 as psi4
 import pydft_qmmm.interfaces.openmm as openmm
+import pydft_qmmm.interfaces.sparc as sparc
 
 if TYPE_CHECKING:
     from typing import TypeAlias
@@ -39,7 +40,7 @@ except AttributeError:
 
 LOADED_INTERFACES = tuple(
     map(lambda x: x.load(), DISCOVERED_INTERFACES),
-) + (psi4, openmm)
+) + (psi4, openmm, sparc)
 
 
 def get_interfaces() -> dict[str, tuple[TheoryLevel, Factory]]:
