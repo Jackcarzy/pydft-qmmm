@@ -143,3 +143,6 @@ gho4_psi4
 
 # Mac directory attributes
 .DS_Store
+
+# Claude Code
+.claude/
