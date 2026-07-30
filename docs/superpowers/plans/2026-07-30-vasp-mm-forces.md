@@ -264,8 +264,13 @@ class TestSyntheticThirdLaw:
         good = grid_potential.contract_gaussian_gradient(
             phi_a, b_pos, charge, SHAPE, CELL, 0.5,
         )[0]
+        # 0.6, not something larger: at SHAPE=48 / CELL=10 the spacing is
+        # 0.208 A, so sigma=0.9 needs a 53-point box and trips
+        # contract_gaussian_gradient's cell-wrap guard instead of
+        # producing a mismatched force.  0.6 still deviates far above
+        # the rtol below.
         bad = grid_potential.contract_gaussian_gradient(
-            phi_a, b_pos, charge, SHAPE, CELL, 0.9,
+            phi_a, b_pos, charge, SHAPE, CELL, 0.6,
         )[0]
         reference = grid_potential.contract_gaussian_gradient(
             phi_b, a_pos, charge, SHAPE, CELL, 0.5,
