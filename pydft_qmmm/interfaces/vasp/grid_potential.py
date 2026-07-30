@@ -74,6 +74,60 @@ def _axis_spacings(shape, cell):
     return widths / np.array(shape, dtype=np.float64)
 
 
+def _gaussian_box(position, inverse, dimensions, cell, sigma, prefactor, offsets):
+    """The local Gaussian box for one charge.
+
+    Factors out the ~25-line block shared, verbatim apart from what is
+    done with the result, by spread_gaussian and
+    contract_gaussian_gradient.  Using this for both is what makes
+    Newton's third law hold term by term rather than approximately: it
+    guarantees the two functions see the identical kernel, box and
+    minimum-image convention, rather than relying on two hand-maintained
+    copies staying in sync.
+
+    Everything that does not vary per charge -- inverse, dimensions,
+    prefactor and offsets -- is computed once by the caller and passed
+    in here unchanged; this function only does the per-charge geometry
+    (the box centre, the wrapped grid indices, and the minimum-imaged
+    displacement and kernel on that box).  Recomputing any of those
+    per-charge inputs inside this function would reintroduce the
+    O(N_charges * N_grid) cost the box was built to avoid.
+
+    Args:
+        position: A single Cartesian position (Angstrom).
+        inverse: The inverse of `cell`, i.e. cell**-1.
+        dimensions: The grid shape, as an int array.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        sigma: The Gaussian width (Angstrom).
+        prefactor: The Gaussian normalization, (2*pi*sigma**2)**-1.5.
+        offsets: Per-axis arrays of grid-point offsets from the box
+            centre, e.g. [np.arange(-h, h + 1) for h in half].
+
+    Returns:
+        (index, cartesian, gaussian): `index` is the per-axis list of
+        wrapped grid indices suitable for `array[np.ix_(*index)]`;
+        `cartesian` is the minimum-imaged Cartesian displacement from
+        `position` to each point in the box; `gaussian` is the Gaussian
+        kernel evaluated on that same box.
+    """
+    fractional = position @ inverse
+    centre = np.round(fractional * dimensions).astype(int)
+    index = [(centre[i] + offsets[i]) % dimensions[i] for i in range(3)]
+    block = np.stack(
+        np.meshgrid(
+            *[(centre[i] + offsets[i]) / dimensions[i] for i in range(3)],
+            indexing="ij",
+        ),
+        axis=-1,
+    )
+    delta = block - fractional
+    delta -= np.round(delta)
+    cartesian = delta @ cell
+    squared = np.einsum("...k,...k->...", cartesian, cartesian)
+    gaussian = prefactor * np.exp(-0.5 * squared / sigma**2)
+    return index, cartesian, gaussian
+
+
 def spread_gaussian(positions, charges, shape, cell, sigma, cutoff=6.0):
     """Spread point charges onto the grid as normalized Gaussians.
 
@@ -125,25 +179,10 @@ def spread_gaussian(positions, charges, shape, cell, sigma, cutoff=6.0):
         return rho
     offsets = [np.arange(-h, h + 1) for h in half]
     for position, charge in zip(positions, charges):
-        centre = np.round((position @ inverse) * dimensions).astype(int)
-        index = [(centre[i] + offsets[i]) % dimensions[i] for i in range(3)]
-        block = np.stack(
-            np.meshgrid(
-                *[
-                    (centre[i] + offsets[i]) / dimensions[i]
-                    for i in range(3)
-                ],
-                indexing="ij",
-            ),
-            axis=-1,
+        index, _, gaussian = _gaussian_box(
+            position, inverse, dimensions, cell, sigma, prefactor, offsets,
         )
-        delta = block - (position @ inverse)
-        delta -= np.round(delta)
-        cartesian = delta @ cell
-        squared = np.einsum("...k,...k->...", cartesian, cartesian)
-        rho[np.ix_(*index)] += (
-            charge * prefactor * np.exp(-0.5 * squared / sigma**2)
-        )
+        rho[np.ix_(*index)] += charge * gaussian
     return rho
 
 
@@ -453,20 +492,9 @@ def contract_gaussian_gradient(
         )
     offsets = [np.arange(-h, h + 1) for h in half]
     for index, (position, charge) in enumerate(zip(positions, charges)):
-        centre = np.round((position @ inverse) * dimensions).astype(int)
-        select = [(centre[i] + offsets[i]) % dimensions[i] for i in range(3)]
-        block = np.stack(
-            np.meshgrid(
-                *[(centre[i] + offsets[i]) / dimensions[i] for i in range(3)],
-                indexing="ij",
-            ),
-            axis=-1,
+        select, cartesian, gaussian = _gaussian_box(
+            position, inverse, dimensions, cell, sigma, prefactor, offsets,
         )
-        delta = block - (position @ inverse)
-        delta -= np.round(delta)
-        cartesian = delta @ cell
-        squared = np.einsum("...k,...k->...", cartesian, cartesian)
-        gaussian = prefactor * np.exp(-0.5 * squared / sigma**2)
         # THREE sign flips, and dropping any one of them inverts every
         # MM force:
         #   grad_r g(r - r_j) = -(r - r_j)/sigma**2 * g
