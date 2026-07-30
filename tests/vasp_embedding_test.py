@@ -183,16 +183,21 @@ class TestSmoke:
             "control is vacuous if the charges were already zero"
         )
         vasp_qmmm_system.charges[:] = 0.0
+        # Same cutoff as the vasp_embedded fixture: without it this ran
+        # at the default ENCUT=400, a 392**3 grid, for no benefit.
+        light = {"ENCUT": 250}
         plain = vasp_interface_factory(
             vasp_qmmm_system,
             directory=str(vasp_workdir / "plain"),
             pp_path=vasp_pp_library,
+            incar=light,
         ).compute_energy()
         embedded = vasp_interface_factory(
             vasp_qmmm_system,
             directory=str(vasp_workdir / "embed"),
             pp_path=vasp_pp_library,
             embedding=True,
+            incar=light,
         ).compute_energy()
         assert embedded == pytest.approx(plain, abs=1e-5)
 
