@@ -397,3 +397,85 @@ def electron_interaction_energy(charge_density, v_ext):
             f"{v_ext.shape}; they must share VASP's fine grid.",
         )
     return float(np.sum(density * v_ext) / density.size)
+
+
+def contract_gaussian_gradient(
+        field, positions, charges, shape, cell, sigma, cutoff=6.0,
+):
+    """Force on each Gaussian charge sitting in a grid potential.
+
+    This is the transpose of spread_gaussian.  That function builds a
+    potential by summing q*g_sigma over a 6 sigma box; this one
+    contracts a potential against grad g_sigma over the same box:
+
+        F_j = -q_j * integral( field(r) * grad_{r_j} g_sigma(r - r_j) dr )
+
+    Note grad_{r_j}, the derivative with respect to the CHARGE
+    position, not with respect to r.  The two differ by a sign and
+    reading it the wrong way inverts every MM force.
+
+    Using the SAME kernel and box is what makes Newton's third law hold
+    term by term rather than approximately: the force is differentiated
+    with respect to exactly the representation the QM density felt.
+
+    Evaluating instead the field's gradient at each charge position
+    would be O(N_charges * N_grid) -- about 2.2 hours per ionic step for
+    2685 charges on a 320**3 grid, versus seconds here.
+
+    Args:
+        field: A scalar potential on the grid, in volts.
+        positions: An Nx3 array of charge positions (Angstrom).
+        charges: An N array of charges (e).
+        shape: The grid dimensions.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        sigma: The Gaussian width (Angstrom).  MUST match the value used
+            to spread the charges.
+        cutoff: Truncation radius in units of sigma.  MUST match too.
+
+    Returns:
+        An Nx3 array of forces (e*V/Angstrom == eV/Angstrom).
+    """
+    shape = tuple(int(n) for n in shape)
+    forces = np.zeros((len(charges), 3), dtype=np.float64)
+    if len(charges) == 0:
+        return forces
+    inverse = np.linalg.inv(cell)
+    dimensions = np.array(shape)
+    volume = abs(np.linalg.det(cell))
+    d_volume = volume / float(np.prod(dimensions))
+    prefactor = (2.0 * np.pi * sigma**2) ** -1.5
+    half = np.ceil(cutoff * sigma / _axis_spacings(shape, cell)).astype(int)
+    if np.any(2 * half + 1 >= dimensions):
+        raise ValueError(
+            "The cutoff box wraps the cell; contraction would "
+            "double-count periodic images.  Use a larger cell or a "
+            "smaller sigma.",
+        )
+    offsets = [np.arange(-h, h + 1) for h in half]
+    for index, (position, charge) in enumerate(zip(positions, charges)):
+        centre = np.round((position @ inverse) * dimensions).astype(int)
+        select = [(centre[i] + offsets[i]) % dimensions[i] for i in range(3)]
+        block = np.stack(
+            np.meshgrid(
+                *[(centre[i] + offsets[i]) / dimensions[i] for i in range(3)],
+                indexing="ij",
+            ),
+            axis=-1,
+        )
+        delta = block - (position @ inverse)
+        delta -= np.round(delta)
+        cartesian = delta @ cell
+        squared = np.einsum("...k,...k->...", cartesian, cartesian)
+        gaussian = prefactor * np.exp(-0.5 * squared / sigma**2)
+        # THREE sign flips, and dropping any one of them inverts every
+        # MM force:
+        #   grad_r g(r - r_j) = -(r - r_j)/sigma**2 * g
+        #   d/dr_j carries the opposite sign of grad_r, giving
+        #       dg/dr_j = +(r - r_j)/sigma**2 * g
+        #   F_j = -dE/dr_j puts the leading minus back.
+        # Net: F_j = -q_j/sigma**2 * integral( phi (r - r_j) g ).
+        weight = gaussian * field[np.ix_(*select)]
+        forces[index] = -charge * d_volume * np.einsum(
+            "ijk,ijkc->c", weight, cartesian,
+        ) / sigma**2
+    return forces

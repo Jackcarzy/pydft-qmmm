@@ -801,3 +801,50 @@ class TestPMEResolution:
         coarse = self._potential(5.0, 30, tmp_path)
         fine = self._potential(5.0, 60, tmp_path)
         assert abs(fine.min()) > 1.5 * abs(coarse.min())
+
+
+class TestGaussianContraction:
+    """The transpose of spread_gaussian: forces from a grid potential."""
+
+    def test_recovers_the_force_in_a_linear_field(self):
+        # For phi = c.r the convolution with a normalized Gaussian is
+        # exact, so contracting must return exactly the uniform-field
+        # force F = qE = -q*grad(phi) = -q*c per charge, independent of
+        # sigma.  The MINUS is the whole point: contracting returns a
+        # force, not an energy gradient.
+        gradient = np.array([0.3, -0.7, 0.2])
+        axes = [np.arange(n) * 10.0 / n for n in SHAPE]
+        mesh = np.meshgrid(*axes, indexing="ij")
+        field = sum(g * m for g, m in zip(gradient, mesh))
+        positions = np.array([[5.0, 5.0, 5.0], [3.0, 7.0, 4.0]])
+        charges = np.array([1.0, -0.5])
+        got = grid_potential.contract_gaussian_gradient(
+            field, positions, charges, SHAPE, CELL, sigma=0.4,
+        )
+        assert got == pytest.approx(-np.outer(charges, gradient), rel=1e-6)
+
+    def test_scales_linearly_with_charge(self):
+        field = np.random.RandomState(0).normal(size=SHAPE)
+        position = np.array([[5.0, 5.0, 5.0]])
+        one = grid_potential.contract_gaussian_gradient(
+            field, position, np.array([1.0]), SHAPE, CELL, sigma=0.5,
+        )
+        two = grid_potential.contract_gaussian_gradient(
+            field, position, np.array([2.0]), SHAPE, CELL, sigma=0.5,
+        )
+        assert two == pytest.approx(2.0 * one, rel=1e-12)
+
+    def test_uniform_field_exerts_no_force(self):
+        field = np.full(SHAPE, 3.7)
+        got = grid_potential.contract_gaussian_gradient(
+            field, np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            SHAPE, CELL, sigma=0.4,
+        )
+        assert got[0] == pytest.approx(np.zeros(3), abs=1e-9)
+
+    def test_empty_selection_returns_an_empty_array(self):
+        got = grid_potential.contract_gaussian_gradient(
+            np.zeros(SHAPE), np.zeros((0, 3)), np.zeros(0),
+            SHAPE, CELL, sigma=0.4,
+        )
+        assert got.shape == (0, 3)
