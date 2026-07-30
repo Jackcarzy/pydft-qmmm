@@ -231,3 +231,34 @@ class TestGradients:
         analytical = calculator.calculate().forces[0]
         numerical = -numerical_gradient(calculator, frozenset({0}), dist=1e-3)[0]
         assert analytical == pytest.approx(numerical, abs=1.0)
+
+    def test_unembedded_forces_match_numerical_gradient(
+            self, vasp_qmmm_system, vasp_workdir, vasp_pp_library,
+    ):
+        """Control: does the interface pass this test WITHOUT embedding?
+
+        Every embedded run so far has shown a residual of order
+        10 kJ/mol/A between the returned forces and the numerical
+        gradient.  This isolates whether that is introduced by the
+        embedding corrections at all, or is a pre-existing property of
+        the VASP interface and this test setup -- restart reuse across
+        displacements, Pulay/egg-box effects on a 320**3 grid, and so
+        on.  Without it, any further tuning of the embedding code is
+        guesswork.
+        """
+        from pydft_qmmm.calculators import PotentialCalculator
+        from pydft_qmmm.utils import numerical_gradient
+        potential = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(vasp_workdir / "vasp"),
+            pp_path=vasp_pp_library,
+            embedding=False,
+            incar={"ENCUT": 300, "EDIFF": 1e-7},
+        )
+        calculator = PotentialCalculator(vasp_qmmm_system, potential)
+        analytical = calculator.calculate().forces[0]
+        numerical = -numerical_gradient(calculator, frozenset({0}), dist=1e-3)[0]
+        print(f"\n  unembedded analytical: {analytical}")
+        print(f"  unembedded numerical : {numerical}")
+        print(f"  unembedded residual  : {analytical - numerical}")
+        assert analytical == pytest.approx(numerical, abs=1.0)
