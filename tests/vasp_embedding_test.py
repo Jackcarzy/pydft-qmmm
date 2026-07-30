@@ -334,7 +334,15 @@ class TestPME:
             embedding=True,
             incar={"ENCUT": 250, "EDIFF": 1e-6},
         )
-        pme = PMEElectronicPotential(vasp_pme_system, 5.0, (30, 30, 30), 6)
+        # alpha = 0.35, not the 5.0 the MM fixtures use.  helPME
+        # B-spline interpolates from ITS grid onto VASP's points, which
+        # is only valid while the PME grid resolves the reciprocal-space
+        # function -- scale 1/alpha.  At alpha = 5.0 that scale is 0.2 A
+        # against a 1 A PME spacing, and min V_ext DIVERGES with
+        # refinement (-34.3, -56.7, -67.1 eV at 30/60/120**3) instead of
+        # converging.  At alpha = 0.35 it is converged to four decimals
+        # already at 30**3.
+        pme = PMEElectronicPotential(vasp_pme_system, 0.35, (30, 30, 30), 6)
         potential.add_electronic_potential(pme)
         energy = potential.compute_energy()
         sentinel = os.path.join(potential.directory, vasp_plugin.SENTINEL)

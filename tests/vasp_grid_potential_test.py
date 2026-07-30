@@ -768,3 +768,36 @@ class TestConstantFieldFigure2b:
         assert abs(correction[2]) == pytest.approx(field, rel=0.05)
         assert correction[0] == pytest.approx(0.0, abs=1e-3)
         assert correction[1] == pytest.approx(0.0, abs=1e-3)
+
+
+class TestPMEResolution:
+    """helPME interpolates onto VASP's grid; that needs alpha*h small."""
+
+    def _potential(self, alpha, gridnumber, tmp_path):
+        import numpy as np
+        from pydft_qmmm.interfaces.vasp import pme_external, vasp_utils
+        rng = np.random.RandomState(0)
+        length = 29.899
+        cell = np.diag([length] * 3)
+        positions = rng.uniform(0.0, length, (200, 3))
+        charges = rng.uniform(-1.0, 1.0, 200)
+        charges -= charges.mean()
+        path = str(tmp_path / f"PME_{alpha}_{gridnumber}")
+        vasp_utils.write_pme_data(
+            path, positions, charges, [], alpha,
+            (gridnumber,) * 3, 6, 0,
+        )
+        return pme_external.build_pme_potential(path, (48, 48, 48), cell)
+
+    def test_converges_with_a_sane_ewald_parameter(self, tmp_path):
+        coarse = self._potential(0.35, 30, tmp_path)
+        fine = self._potential(0.35, 60, tmp_path)
+        assert coarse.min() == pytest.approx(fine.min(), rel=1e-3)
+
+    def test_diverges_when_alpha_outruns_the_grid(self, tmp_path):
+        # Guard against silently reusing MM fixture parameters: at
+        # alpha = 5.0 the reciprocal function varies on ~0.2 A while the
+        # PME grid is ~1 A, so refining makes it WORSE, not better.
+        coarse = self._potential(5.0, 30, tmp_path)
+        fine = self._potential(5.0, 60, tmp_path)
+        assert abs(fine.min()) > 1.5 * abs(coarse.min())
