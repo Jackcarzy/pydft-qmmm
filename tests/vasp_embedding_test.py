@@ -360,7 +360,17 @@ class TestPME:
         assert os.path.isfile(sentinel), "plugin never fired"
         report = open(sentinel).read()
         print("\n" + report)
-        assert "(PME)" in report, "took the cutoff path, not PME"
+        assert "PME" in report, "took the cutoff path, not PME"
+        # Approach 2 needs BOTH halves present: PME supplies the
+        # long-range tail, the analytic term reinstates the near field
+        # that compute_P_adj removed.  Asserting on both stops the
+        # near-field term going missing again.
+        assert "V_pme" in report and "V_near" in report
+        near = float(
+            [ln for ln in report.splitlines() if "V_near" in ln][0]
+            .split("=")[1],
+        )
+        assert near < -1.0, f"analytic near field is missing ({near})"
         minimum = float(
             [ln for ln in report.splitlines() if "min V_ext" in ln][0]
             .split("=")[1],
