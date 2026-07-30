@@ -18,6 +18,9 @@ import numpy as np
 # Vacuum permittivity, e/(V*Angstrom).
 EPS0 = 0.005526349358057108
 
+# eV -> kJ/mol.
+KJMOL_PER_EV = 96.48533212331
+
 
 def read_mm_charges(path, expect_step=None):
     """Read the MM point charges written by the VASP interface.

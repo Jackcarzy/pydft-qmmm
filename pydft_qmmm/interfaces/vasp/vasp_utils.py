@@ -19,6 +19,7 @@ __all__ = [
     "write_potcar",
     "write_mm_charges",
     "write_pme_data",
+    "read_mm_forces",
     "read_vasprun",
     "run_vasp",
     "VaspExecutionError",
@@ -313,6 +314,37 @@ def write_pme_data(
         for (x, y, z), q in zip(positions, charges):
             fh.write(f"{x:.12e} {y:.12e} {z:.12e} {q:.12e}\n")
         fh.write(" ".join(str(int(i)) for i in excluded) + "\n")
+
+
+def read_mm_forces(
+        path: str,
+        expect_step: int | None = None,
+) -> tuple[NDArray[np.float64], int]:
+    r"""Read the MM forces the plugin computed.
+
+    Args:
+        path: The file to read.
+        expect_step: If given, the step stamp the file must carry.
+
+    Returns:
+        An Nx3 array of forces
+        (:math:`\mathrm{kJ\;mol^{-1}\;\mathring{A}^{-1}}`) and the step.
+    """
+    with open(path) as fh:
+        count, step = fh.readline().split()
+        count, step = int(count), int(step)
+        if count == 0:
+            return np.zeros((0, 3)), step
+        data = np.loadtxt(fh, dtype=np.float64, ndmin=2)
+    if len(data) != count:
+        raise ValueError(
+            f"{path} declares {count} forces but holds {len(data)}.",
+        )
+    if expect_step is not None and step != expect_step:
+        raise ValueError(
+            f"{path} is at step {step}, expected {expect_step}.",
+        )
+    return data.copy(), step
 
 
 def read_vasprun(

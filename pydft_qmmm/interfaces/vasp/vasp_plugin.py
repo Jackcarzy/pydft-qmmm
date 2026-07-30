@@ -19,8 +19,11 @@ import numpy as np
 
 try:
     from .grid_potential import EPS0
+    from .grid_potential import KJMOL_PER_EV
     from .grid_potential import build_external_potential
+    from .grid_potential import contract_gaussian_gradient
     from .grid_potential import electron_interaction_energy
+    from .grid_potential import electrostatic_potential_from_vasp
     from .grid_potential import gradient_at
     from .grid_potential import interpolant_gradient_at
     from .grid_potential import interpolate_at
@@ -30,8 +33,11 @@ except ImportError:
     # VASP copies this file into the run directory and imports it as a
     # top-level module, where the package-relative form is unavailable.
     from grid_potential import EPS0
+    from grid_potential import KJMOL_PER_EV
     from grid_potential import build_external_potential
+    from grid_potential import contract_gaussian_gradient
     from grid_potential import electron_interaction_energy
+    from grid_potential import electrostatic_potential_from_vasp
     from grid_potential import gradient_at
     from grid_potential import interpolant_gradient_at
     from grid_potential import interpolate_at
@@ -39,14 +45,17 @@ except ImportError:
     from grid_potential import spectral_value_and_gradient
 
 __all__ = [
-    "EPS0", "CHARGE_FILE", "SENTINEL", "ERROR_FILE",
-    "build_external_potential", "electron_interaction_energy",
+    "EPS0", "KJMOL_PER_EV", "CHARGE_FILE", "FORCE_FILE", "SENTINEL",
+    "ERROR_FILE",
+    "build_external_potential", "contract_gaussian_gradient",
+    "electron_interaction_energy", "electrostatic_potential_from_vasp",
     "gradient_at", "interpolant_gradient_at", "interpolate_at",
     "read_mm_charges", "spectral_value_and_gradient",
     "reset_cache", "local_potential", "force_and_stress",
 ]
 
 CHARGE_FILE = "MM_CHARGES"
+FORCE_FILE = "MM_FORCES"
 SENTINEL = "PLUGIN_FIRED.txt"
 ERROR_FILE = "PLUGIN_ERROR.txt"
 PME_FILE = "PME_DATA"
@@ -180,6 +189,9 @@ def local_potential(constants, additions):
     the Tier 2 test was written as a measurement rather than a check.
     """
     try:
+        if getattr(constants, "hartree_potential", None) is not None:
+            _CACHE["hartree"] = np.array(constants.hartree_potential)
+            _CACHE["ion"] = np.array(constants.ion_potential)
         additions.total_potential += _external_potential(constants)
     except Exception as exc:
         _record_error(exc)
@@ -222,22 +234,44 @@ def force_and_stress(constants, additions):
     """
     try:
         cell = np.asarray(constants.lattice_vectors, dtype=np.float64)
+        shape = tuple(int(n) for n in constants.shape_grid)
         positions = np.asarray(constants.positions) @ cell
-        if len(positions) == 0:
-            return
-        v_ext = _external_potential(constants)
-        # ion_types is already 0-indexed: adjust_indexing subtracts one
-        # from every IndexArray before the plugin sees it.
-        valence = np.asarray(constants.ZVAL, dtype=np.float64)[
-            np.asarray(constants.ion_types, dtype=int)
-        ]
-        # One Fourier series supplies both, so the force is exactly the
-        # derivative of the energy.  See spectral_value_and_gradient.
-        potential, gradient = spectral_value_and_gradient(
-            v_ext, cell, positions,
+        # This used to be "if len(positions) == 0: return", since with
+        # no QM ions there was nothing left to do.  Now there is: the
+        # MM back-reaction below must still run and refresh MM_FORCES
+        # every SCF step even when this subsystem carries zero QM
+        # atoms, so the empty-ion case skips only the nuclear terms
+        # rather than the whole callback.
+        if len(positions) > 0:
+            v_ext = _external_potential(constants)
+            # ion_types is already 0-indexed: adjust_indexing subtracts
+            # one from every IndexArray before the plugin sees it.
+            valence = np.asarray(constants.ZVAL, dtype=np.float64)[
+                np.asarray(constants.ion_types, dtype=int)
+            ]
+            # One Fourier series supplies both, so the force is exactly
+            # the derivative of the energy.  See
+            # spectral_value_and_gradient.
+            potential, gradient = spectral_value_and_gradient(
+                v_ext, cell, positions,
+            )
+            additions.total_energy += -float(np.sum(valence * potential))
+            additions.forces += valence[:, None] * gradient
+        # The QM->MM back-reaction.  VASP's additions.forces is sized
+        # 3 x number_ions, i.e. QM ions only -- the MM atoms do not
+        # exist in VASP's calculation -- so these go back to the driver
+        # through a file, the way the charges came in.
+        phi_qm = electrostatic_potential_from_vasp(
+            _CACHE.get("hartree"), _CACHE.get("ion"),
         )
-        additions.total_energy += -float(np.sum(valence * potential))
-        additions.forces += valence[:, None] * gradient
+        mm_positions, mm_charges, step, sigma = read_mm_charges(CHARGE_FILE)
+        mm_forces = contract_gaussian_gradient(
+            phi_qm, mm_positions, mm_charges, shape, cell, sigma,
+        ) * KJMOL_PER_EV
+        with open(FORCE_FILE, "w") as fh:
+            fh.write(f"{len(mm_forces)} {step}\n")
+            for fx, fy, fz in mm_forces:
+                fh.write(f"{fx:.12e} {fy:.12e} {fz:.12e}\n")
     except Exception as exc:
         _record_error(exc)
         raise

@@ -351,6 +351,8 @@ def _constants(shape, cell, positions=None, zval=11.0):
         # VASP normalizes sum(rho) = NELECT * N_grid; this stands in for
         # 8 electrons spread uniformly.
         charge_density=np.full(shape, 8.0),
+        hartree_potential=None,
+        ion_potential=None,
     )
 
 
@@ -450,7 +452,14 @@ class TestCallbacks:
         vasp_plugin.reset_cache()
         ion = np.array([[7.0, 5.0, 5.0]])
         constants = _constants(SHAPE, CELL, positions=ion, zval=11.0)
+        # Real VASP always calls local_potential before force_and_stress
+        # every SCF step; the QM->MM back-reaction now added to
+        # force_and_stress needs the Hartree/ion potentials that call
+        # caches, so mimic that sequence here too.
+        constants.hartree_potential = np.zeros(SHAPE)
+        constants.ion_potential = np.zeros(SHAPE)
         additions = _additions(SHAPE)
+        vasp_plugin.local_potential(constants, additions)
         vasp_plugin.force_and_stress(constants, additions)
         # dE_I = -Z_I V_ext(R_I); V_ext < 0 near a positive charge, so
         # the energy correction is positive (repulsion).
@@ -465,8 +474,12 @@ class TestCallbacks:
             step=0, sigma=0.4,
         )
         vasp_plugin.reset_cache()
+        constants = _constants(SHAPE, CELL)
+        constants.hartree_potential = np.zeros(SHAPE)
+        constants.ion_potential = np.zeros(SHAPE)
         additions = _additions(SHAPE)
-        vasp_plugin.force_and_stress(_constants(SHAPE, CELL), additions)
+        vasp_plugin.local_potential(constants, additions)
+        vasp_plugin.force_and_stress(constants, additions)
         assert additions.total_energy == 0.0
         assert np.all(additions.forces == 0.0)
 
@@ -476,9 +489,16 @@ class TestCallbacks:
         # dE = -Z V_ext (as the spec originally did) flips every nuclear
         # force; this finite-difference check pins them together.
         monkeypatch.chdir(tmp_path)
+        # sigma kept just under 0.8: contract_gaussian_gradient's cutoff
+        # box (6*sigma) must fit inside this 10 A test cell, or the new
+        # MM back-reaction this test now also exercises raises "cutoff
+        # box wraps the cell" (build_external_potential's own cutoff
+        # path tolerates the wrap by falling back to a full-grid sum;
+        # contract_gaussian_gradient deliberately does not, to avoid
+        # silently double-counting periodic images).
         vasp_utils.write_mm_charges(
             "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
-            step=0, sigma=0.8,
+            step=0, sigma=0.75,
         )
 
         def energy_at(x):
@@ -486,7 +506,10 @@ class TestCallbacks:
             constants = _constants(
                 SHAPE, CELL, positions=np.array([[x, 5.3, 4.7]]),
             )
+            constants.hartree_potential = np.zeros(SHAPE)
+            constants.ion_potential = np.zeros(SHAPE)
             additions = _additions(SHAPE)
+            vasp_plugin.local_potential(constants, additions)
             vasp_plugin.force_and_stress(constants, additions)
             return additions.total_energy, additions.forces[0, 0]
 
@@ -505,11 +528,12 @@ class TestCallbacks:
             step=0, sigma=0.4,
         )
         vasp_plugin.reset_cache()
+        constants = _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]]))
+        constants.hartree_potential = np.zeros(SHAPE)
+        constants.ion_potential = np.zeros(SHAPE)
         additions = _additions(SHAPE)
-        vasp_plugin.force_and_stress(
-            _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]])),
-            additions,
-        )
+        vasp_plugin.local_potential(constants, additions)
+        vasp_plugin.force_and_stress(constants, additions)
         assert additions.forces[0, 0] > 0.0
 
     def test_opposite_charges_attract(self, tmp_path, monkeypatch):
@@ -519,11 +543,12 @@ class TestCallbacks:
             step=0, sigma=0.4,
         )
         vasp_plugin.reset_cache()
+        constants = _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]]))
+        constants.hartree_potential = np.zeros(SHAPE)
+        constants.ion_potential = np.zeros(SHAPE)
         additions = _additions(SHAPE)
-        vasp_plugin.force_and_stress(
-            _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]])),
-            additions,
-        )
+        vasp_plugin.local_potential(constants, additions)
+        vasp_plugin.force_and_stress(constants, additions)
         assert additions.forces[0, 0] < 0.0
 
 
@@ -625,9 +650,12 @@ class TestInterpolantGradient:
         # error falls ~4x when the step halves -- not that it reaches
         # machine precision.
         monkeypatch.chdir(tmp_path)
+        # See test_energy_and_force_corrections_are_consistent: sigma
+        # must stay under ~0.8 so contract_gaussian_gradient's cutoff
+        # box fits inside this 10 A test cell.
         vasp_utils.write_mm_charges(
             "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
-            step=0, sigma=0.8,
+            step=0, sigma=0.75,
         )
 
         def probe(x):
@@ -635,7 +663,10 @@ class TestInterpolantGradient:
             constants = _constants(
                 SHAPE, CELL, positions=np.array([[x, 5.3, 4.7]]),
             )
+            constants.hartree_potential = np.zeros(SHAPE)
+            constants.ion_potential = np.zeros(SHAPE)
             additions = _additions(SHAPE)
+            vasp_plugin.local_potential(constants, additions)
             vasp_plugin.force_and_stress(constants, additions)
             return additions.total_energy, additions.forces[0, 0]
 
@@ -661,11 +692,12 @@ class TestInterpolantGradient:
             step=0, sigma=0.4,
         )
         vasp_plugin.reset_cache()
+        constants = _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]]))
+        constants.hartree_potential = np.zeros(SHAPE)
+        constants.ion_potential = np.zeros(SHAPE)
         additions = _additions(SHAPE)
-        vasp_plugin.force_and_stress(
-            _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]])),
-            additions,
-        )
+        vasp_plugin.local_potential(constants, additions)
+        vasp_plugin.force_and_stress(constants, additions)
         assert additions.forces[0, 0] > 0.0
         assert additions.forces[0, 1] == pytest.approx(0.0, abs=1e-9)
         assert additions.forces[0, 2] == pytest.approx(0.0, abs=1e-9)
@@ -924,3 +956,42 @@ class TestVaspPotentialConversion:
             grid_potential.electrostatic_potential_from_vasp(
                 np.zeros((4, 4, 4)), np.zeros((8, 8, 8)),
             )
+
+
+class TestMMForceHandoff:
+
+    def test_force_and_stress_writes_mm_forces(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[7.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.5,
+        )
+        vasp_plugin.reset_cache()
+        constants = _constants(SHAPE, CELL)
+        # A positive Gaussian at the origin side: its potential pushes a
+        # positive MM charge at +x further along +x.
+        phi = poisson_of(np.array([[5.0, 5.0, 5.0]]), np.array([1.0]), 0.5)
+        constants.hartree_potential = -phi
+        constants.ion_potential = np.zeros(SHAPE)
+        additions = _additions(SHAPE)
+        vasp_plugin.local_potential(constants, additions)
+        vasp_plugin.force_and_stress(constants, additions)
+        forces, step = vasp_utils.read_mm_forces("MM_FORCES")
+        assert step == 0
+        assert forces.shape == (1, 3)
+        assert forces[0, 0] > 0.0
+        assert forces[0, 1] == pytest.approx(0.0, abs=1e-9)
+
+    def test_missing_potentials_raise(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[7.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.5,
+        )
+        vasp_plugin.reset_cache()
+        constants = _constants(SHAPE, CELL)
+        additions = _additions(SHAPE)
+        vasp_plugin.local_potential(constants, additions)
+        with pytest.raises(Exception):
+            vasp_plugin.force_and_stress(constants, additions)
+        assert (tmp_path / vasp_plugin.ERROR_FILE).exists()
