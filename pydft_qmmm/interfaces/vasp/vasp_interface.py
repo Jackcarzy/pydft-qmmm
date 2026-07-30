@@ -92,12 +92,13 @@ class VaspInterface(QMInterface):
             potential: The electronic potential that would be
                 incorporated into QM calculations.
         """
-        raise NotImplementedError(
-            "Electrostatic embedding with VASP requires a VASP binary "
-            "compiled with -DPLUGINS, which is not yet wired up in this "
-            "interface.  Use a mechanical-embedding QM/MM scheme, i.e. "
-            "QMMMHamiltonian('mechanical', 'mechanical').",
-        )
+        if not self.embedding:
+            raise NotImplementedError(
+                "PME embedding needs the VASP Python plugin.  Build the "
+                "potential with embedding=True and a vasp_std compiled "
+                "with -DPLUGINS.",
+            )
+        self.potentials.append(potential)
 
     def _write_input(self) -> list[int]:
         """Write the VASP input files for the current QM geometry.
@@ -144,7 +145,10 @@ class VaspInterface(QMInterface):
             # from the run directory, so its package-relative import of
             # grid_potential falls back to a plain one, which only
             # resolves if grid_potential.py sits beside it.
-            for name in ("vasp_plugin.py", "grid_potential.py"):
+            modules = ["vasp_plugin.py", "grid_potential.py"]
+            if self.potentials:
+                modules.append("pme_external.py")
+            for name in modules:
                 shutil.copyfile(
                     os.path.join(os.path.dirname(__file__), name),
                     os.path.join(self.directory, name),
@@ -181,6 +185,34 @@ class VaspInterface(QMInterface):
         )
         return len(charges)
 
+    def _write_pme_data(self) -> int:
+        r"""Write the whole system plus Ewald parameters for the plugin.
+
+        The cutoff scheme ships only subsystem II, but PME is a lattice
+        sum: the reciprocal part runs over every charge and a real-space
+        adjustment removes those that must not act on the QM region.
+
+        Returns:
+            The number of charges written.
+        """
+        os.makedirs(self.directory, exist_ok=True)
+        potential = self.potentials[0]
+        excluded = sorted(self.system.select("not subsystem III"))
+        path = os.path.join(self.directory, "PME_DATA")
+        if os.path.isfile(path):
+            os.remove(path)
+        vasp_utils.write_pme_data(
+            path,
+            np.asarray(self.system.positions),
+            np.asarray(self.system.charges),
+            excluded,
+            potential.pme_alpha,
+            tuple(potential.pme_gridnumber),
+            potential.pme_spline_order,
+            self.frame[0],
+        )
+        return len(self.system.charges)
+
     def _check_plugin_fired(self) -> None:
         """Verify that the plugin actually ran.
 
@@ -216,7 +248,10 @@ class VaspInterface(QMInterface):
         """
         order = self._write_input()
         if self.embedding:
-            self._write_mm_charges()
+            if self.potentials:
+                self._write_pme_data()
+            else:
+                self._write_mm_charges()
         vasp_utils.run_vasp(self.command, self.directory)
         if self.embedding:
             self._check_plugin_fired()

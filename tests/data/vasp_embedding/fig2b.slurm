@@ -21,11 +21,16 @@ module purge
 module load nvhpc-openmpi3/24.1
 module load intel-oneapi-mkl/2023.1.0
 
-# NOTE: PYTHONHOME / PATH / LD_LIBRARY_PATH for the plugin environment are
-# deliberately NOT exported here.  They live in run_vasp.sh instead, because
-# PYTHONHOME must point at vasp_plugin (python 3.10, matching the linked
-# libpython3.10) while pytest and pydft_qmmm live in the openmm env (python
-# 3.13).  Exporting it globally would break the interpreter running pytest.
+# ONE environment for both roles.  vasp_qmmm is python 3.10.20, matching
+# the libpython3.10 the VASP binary links, AND carries pydft_qmmm and
+# pytest -- so the driver and the plugin share an interpreter and
+# PYTHONHOME can be exported globally.  That is only possible because
+# pydft_qmmm was fixed to actually run on the 3.10 it advertises; before
+# that a wrapper script had to isolate the two interpreters.
+ENV=/storage/home/hcoda1/1/cshao48/.conda/envs/vasp_qmmm
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ENV/lib
+export PYTHONHOME=$ENV
+export PATH=$ENV/bin:$PATH
 
 # 8 threads is optimal for nvhpc 24.1 builds (76.6 s at 8 vs 84.4 s at 1).
 export OMP_NUM_THREADS=8
@@ -35,7 +40,8 @@ ulimit -s unlimited
 REPO=/storage/project/r-jmcdaniel43-0/cshao48/install/pydft-vasp-qmmm/pydft-qmmm
 cd "$REPO"
 
-export PYDFT_QMMM_VASP_COMMAND="$REPO/tests/data/vasp_embedding/run_vasp.sh"
+VASP=/storage/project/r-jmcdaniel43-0/cshao48/install/vasp/vasp.6.6.1_nvhpc24/bin/vasp_std
+export PYDFT_QMMM_VASP_COMMAND="mpirun -np 1 $VASP"
 export VASP_PP_PATH=/storage/project/r-jmcdaniel43-0/cshao48/install/vasp/potpaw_PBE.64
 
 # Keep run directories after the job ends.  pytest's tmp_path lives in
@@ -48,10 +54,9 @@ mkdir -p "$PYDFT_QMMM_VASP_TESTDIR"
 # self-documenting: what was run, with which settings, is recoverable
 # without cross-referencing the repo at that commit.
 cp "$REPO/tests/data/vasp_embedding/fig2b.slurm" "$PYDFT_QMMM_VASP_TESTDIR/" 2>/dev/null || true
-cp "$REPO/tests/data/vasp_embedding/run_vasp.sh" "$PYDFT_QMMM_VASP_TESTDIR/" 2>/dev/null || true
 git -C "$REPO" rev-parse HEAD > "$PYDFT_QMMM_VASP_TESTDIR/COMMIT" 2>/dev/null || true
 
-PYTEST=/storage/home/hcoda1/1/cshao48/.conda/envs/openmm/bin/python
+PYTEST=$ENV/bin/python
 
 echo "=== environment ==="
 echo "  VASP command : $PYDFT_QMMM_VASP_COMMAND"

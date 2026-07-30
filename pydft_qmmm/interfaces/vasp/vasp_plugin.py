@@ -11,6 +11,7 @@ numpy so that it can be exercised without VASP present.
 """
 from __future__ import annotations
 
+import os
 import traceback
 import warnings
 
@@ -48,6 +49,7 @@ __all__ = [
 CHARGE_FILE = "MM_CHARGES"
 SENTINEL = "PLUGIN_FIRED.txt"
 ERROR_FILE = "PLUGIN_ERROR.txt"
+PME_FILE = "PME_DATA"
 
 _CACHE = {}
 
@@ -82,6 +84,23 @@ def _external_potential(constants):
     cell = np.asarray(constants.lattice_vectors, dtype=np.float64)
     if _CACHE.get("shape") == shape and _CACHE.get("v_ext") is not None:
         return _CACHE["v_ext"]
+    if os.path.isfile(PME_FILE):
+        # PME path: the driver shipped the whole system and the Ewald
+        # parameters, and helPME evaluates on VASP's own grid.  Imported
+        # lazily so the cutoff path keeps working without helpme_py.
+        try:
+            from .pme_external import build_pme_potential
+        except ImportError:
+            from pme_external import build_pme_potential
+        v_ext = build_pme_potential(PME_FILE, shape, cell)
+        _CACHE["shape"] = shape
+        _CACHE["v_ext"] = v_ext
+        with open(SENTINEL, "w") as fh:
+            fh.write("local_potential callback executed (PME)\n")
+            fh.write(f"shape_grid   = {shape}\n")
+            fh.write(f"min V_ext eV = {float(v_ext.min()):.6f}\n")
+            fh.write(f"mean V_ext   = {float(v_ext.mean()):.3e}\n")
+        return v_ext
     positions, charges, _, sigma = read_mm_charges(CHARGE_FILE)
     net_charge = float(np.sum(charges)) if len(charges) else 0.0
     if abs(net_charge) > 1e-6:

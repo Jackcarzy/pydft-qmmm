@@ -18,6 +18,7 @@ __all__ = [
     "write_kpoints",
     "write_potcar",
     "write_mm_charges",
+    "write_pme_data",
     "read_vasprun",
     "run_vasp",
     "VaspExecutionError",
@@ -261,6 +262,57 @@ def write_mm_charges(
         fh.write(f"{len(charges)} {step} {sigma:.12e}\n")
         for (x, y, z), q in zip(positions, charges):
             fh.write(f"{x:.12e} {y:.12e} {z:.12e} {q:.12e}\n")
+
+
+def write_pme_data(
+        path: str,
+        positions: NDArray[np.float64],
+        charges: NDArray[np.float64],
+        excluded: Sequence[int],
+        alpha: float,
+        gridnumber: tuple[int, int, int],
+        spline_order: int,
+        step: int,
+) -> None:
+    r"""Write everything the plugin needs to rebuild the PME potential.
+
+    The cutoff scheme only needs subsystem II, but PME is a lattice sum:
+    the reciprocal part runs over EVERY charge, and a real-space
+    adjustment then removes the ones that must not act on the QM region
+    (``not subsystem III``).  So the whole system crosses the boundary,
+    together with the Ewald parameters, since the plugin constructs its
+    own helPME instance.
+
+    Args:
+        path: The destination file.
+        positions: An Nx3 array of positions
+            (:math:`\mathrm{\mathring{A}}`) for the whole system.
+        charges: An N array of charges (:math:`e`).
+        excluded: Indices whose real-space contribution is removed.
+        alpha: The Ewald splitting parameter
+            (:math:`\mathrm{\mathring{A}^{-1}}`).
+        gridnumber: PME grid points along each lattice edge.
+        spline_order: The B-spline interpolation order.
+        step: A monotonically increasing stamp, as for MM_CHARGES.
+    """
+    positions = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    charges = np.asarray(charges, dtype=np.float64).reshape(-1)
+    if len(positions) != len(charges):
+        raise ValueError(
+            f"{len(positions)} positions but {len(charges)} charges.",
+        )
+    excluded = np.asarray(sorted(excluded), dtype=np.int64)
+    if len(excluded) and (excluded[-1] >= len(charges) or excluded[0] < 0):
+        raise ValueError("excluded index out of range.")
+    with open(path, "w") as fh:
+        fh.write(
+            f"{len(charges)} {len(excluded)} {step} {alpha:.12e} "
+            f"{gridnumber[0]} {gridnumber[1]} {gridnumber[2]} "
+            f"{spline_order}\n",
+        )
+        for (x, y, z), q in zip(positions, charges):
+            fh.write(f"{x:.12e} {y:.12e} {z:.12e} {q:.12e}\n")
+        fh.write(" ".join(str(int(i)) for i in excluded) + "\n")
 
 
 def read_vasprun(
