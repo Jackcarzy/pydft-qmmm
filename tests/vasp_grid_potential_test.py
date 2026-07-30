@@ -668,3 +668,102 @@ class TestInterpolantGradient:
         assert additions.forces[0, 0] > 0.0
         assert additions.forces[0, 1] == pytest.approx(0.0, abs=1e-9)
         assert additions.forces[0, 2] == pytest.approx(0.0, abs=1e-9)
+
+
+class TestConstantFieldFigure2b:
+    """The manuscript's Figure 2b validation, Tier 1.
+
+    A neutral hydrogen atom in a constant field E_ext.  The atom is
+    charge neutral and barely polarizable, so the TOTAL force must be
+    ~0.  VASP alone gives 1e*E_ext, because it omits the core-field
+    interaction; Eq. 4 supplies exactly that.
+
+    This is a far better probe of the correction than a QM/MM system:
+    the correction IS the entire signal, rather than a 1.7% residual on
+    a near-total cancellation between two ~950 kJ/mol/A terms.
+    """
+
+    # 10 x 10 x 30 Angstrom, as in VASP-Python/H_in_constant_field.
+    FIELD_CELL = np.diag([10.0, 10.0, 30.0])
+    FIELD_SHAPE = (40, 40, 120)
+
+    def _sheets(self, surface_charge):
+        """Two oppositely charged sheets, +q at z=20 and -q at z=0."""
+        grid = np.linspace(0.0, 10.0, 20, endpoint=False)
+        xy = np.array([(x, y) for x in grid for y in grid])
+        per_site = surface_charge * 100.0 / len(xy)
+        top = np.column_stack([xy, np.full(len(xy), 20.0)])
+        bottom = np.column_stack([xy, np.full(len(xy), 0.0)])
+        positions = np.vstack([top, bottom])
+        charges = np.concatenate([
+            np.full(len(xy), per_site), np.full(len(xy), -per_site),
+        ])
+        return positions, charges
+
+    def test_sheets_make_a_uniform_field_between_them(self):
+        # Between two sheets of surface charge sigma the field is
+        # sigma/eps0, and V_ext = -phi ramps linearly.
+        surface_charge = 0.001          # e / Angstrom**2
+        positions, charges = self._sheets(surface_charge)
+        v_ext = vasp_plugin.build_external_potential(
+            positions, charges, self.FIELD_SHAPE, self.FIELD_CELL, 0.4,
+        )
+        # Probe along z on the axis, well away from both sheets.
+        probes = np.array([[5.0, 5.0, z] for z in (8.0, 10.0, 12.0)])
+        _, gradients = vasp_plugin.spectral_value_and_gradient(
+            v_ext, self.FIELD_CELL, probes,
+        )
+        # NOT sigma/eps0: that is the infinite-parallel-plate result and
+        # does not hold under periodic boundary conditions.  Periodicity
+        # forces the potential to return, so with an inside region of
+        # d = 20 A in a cell of L = 30 A,
+        #     E_in * d + E_out * (L - d) = 0
+        #     E_out - E_in = sigma / eps0
+        # giving |E_in| = (sigma/eps0) * (L - d) / L, i.e. a third here.
+        inside, outside = 20.0, 10.0
+        expected = (surface_charge / vasp_plugin.EPS0) * outside / (
+            inside + outside
+        )
+        # dV_ext/dz is uniform between the sheets ...
+        assert gradients[:, 2] == pytest.approx(
+            np.full(3, gradients[0, 2]), rel=0.05,
+        )
+        # ... and matches the periodic result.
+        assert abs(gradients[0, 2]) == pytest.approx(expected, rel=0.05)
+        # ... with no transverse component on the axis.
+        assert gradients[:, 0] == pytest.approx(np.zeros(3), abs=1e-3)
+
+    def test_return_field_satisfies_periodicity(self):
+        # A structural check on the periodic solve: the field outside
+        # the plates must reverse and scale as -d/(L-d), so that the
+        # potential closes on itself around the cell.
+        positions, charges = self._sheets(0.001)
+        v_ext = vasp_plugin.build_external_potential(
+            positions, charges, self.FIELD_SHAPE, self.FIELD_CELL, 0.4,
+        )
+        probes = np.array([[5.0, 5.0, 10.0], [5.0, 5.0, 25.0]])
+        _, gradients = vasp_plugin.spectral_value_and_gradient(
+            v_ext, self.FIELD_CELL, probes,
+        )
+        assert gradients[1, 2] == pytest.approx(
+            -2.0 * gradients[0, 2], rel=0.05,
+        )
+
+    def test_core_correction_equals_Z_times_the_field(self):
+        # Eq. 4: dF = +Z grad V_ext.  For hydrogen Z = 1, so the
+        # correction must equal 1e * E_ext -- the black dashed line in
+        # Figure 2b, and exactly what cancels VASP's uncorrected force.
+        surface_charge = 0.001
+        positions, charges = self._sheets(surface_charge)
+        v_ext = vasp_plugin.build_external_potential(
+            positions, charges, self.FIELD_SHAPE, self.FIELD_CELL, 0.4,
+        )
+        hydrogen = np.array([[5.0, 5.0, 10.0]])
+        _, gradient = vasp_plugin.spectral_value_and_gradient(
+            v_ext, self.FIELD_CELL, hydrogen,
+        )
+        correction = 1.0 * gradient[0]              # Z_H = 1
+        field = (surface_charge / vasp_plugin.EPS0) * 10.0 / 30.0
+        assert abs(correction[2]) == pytest.approx(field, rel=0.05)
+        assert correction[0] == pytest.approx(0.0, abs=1e-3)
+        assert correction[1] == pytest.approx(0.0, abs=1e-3)

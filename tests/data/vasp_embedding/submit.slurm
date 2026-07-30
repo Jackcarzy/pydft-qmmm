@@ -42,6 +42,13 @@ export VASP_PP_PATH=/storage/project/r-jmcdaniel43-0/cshao48/install/vasp/potpaw
 export PYDFT_QMMM_VASP_TESTDIR=/storage/project/r-jmcdaniel43-0/cshao48/install/pydft-vasp-qmmm/vasp_test_runs/${SLURM_JOB_ID}
 mkdir -p "$PYDFT_QMMM_VASP_TESTDIR"
 
+# Keep the submitted script beside its results, so a run directory is
+# self-documenting: what was run, with which settings, is recoverable
+# without cross-referencing the repo at that commit.
+cp "$REPO/tests/data/vasp_embedding/submit.slurm" "$PYDFT_QMMM_VASP_TESTDIR/" 2>/dev/null || true
+cp "$REPO/tests/data/vasp_embedding/run_vasp.sh" "$PYDFT_QMMM_VASP_TESTDIR/" 2>/dev/null || true
+git -C "$REPO" rev-parse HEAD > "$PYDFT_QMMM_VASP_TESTDIR/COMMIT" 2>/dev/null || true
+
 PYTEST=/storage/home/hcoda1/1/cshao48/.conda/envs/openmm/bin/python
 
 echo "=== environment ==="
@@ -65,3 +72,8 @@ for d in "$TMPDIR"/*/vasp*/OUTCAR /tmp/pytest-of-$USER/pytest-*/*/vasp*/OUTCAR; 
     printf "  %-70s %s\n" "$d" \
         "$(grep 'Elapsed time' "$d" 2>/dev/null | awk '{print $4" s"}')"
 done 2>/dev/null | head -10
+
+# Collect the job log alongside the results.
+cp "$SLURM_SUBMIT_DIR"/*."$SLURM_JOB_ID".out "$PYDFT_QMMM_VASP_TESTDIR/" 2>/dev/null || true
+cp "$SLURM_SUBMIT_DIR"/*."$SLURM_JOB_ID".err "$PYDFT_QMMM_VASP_TESTDIR/" 2>/dev/null || true
+echo "run directory: $PYDFT_QMMM_VASP_TESTDIR"
