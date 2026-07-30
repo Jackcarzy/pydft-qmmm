@@ -50,3 +50,43 @@ def read_mm_charges(path, expect_step=None):
             "interface did not refresh the MM charges.",
         )
     return data[:, :3].copy(), data[:, 3].copy(), step, sigma
+
+
+def _fractional_grid(shape):
+    """Build the fractional coordinates of every grid point."""
+    axes = [np.arange(n, dtype=np.float64) / n for n in shape]
+    return np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
+
+
+def spread_gaussian(positions, charges, shape, cell, sigma):
+    """Spread point charges onto the grid as normalized Gaussians.
+
+    A point charge cannot be represented on a finite FFT grid, so each
+    is smeared with width sigma.  Displacements are minimum-imaged in
+    fractional coordinates, which is exact for the nearest image and
+    negligible in error while sigma is small against the cell.
+
+    Args:
+        positions: An Nx3 array of positions (Angstrom).
+        charges: An N array of charges (e).
+        shape: The grid dimensions.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        sigma: The Gaussian width (Angstrom).
+
+    Returns:
+        The charge density on the grid (e/Angstrom**3).
+    """
+    shape = tuple(int(n) for n in shape)
+    rho = np.zeros(shape, dtype=np.float64)
+    if len(charges) == 0:
+        return rho
+    fractional = _fractional_grid(shape)
+    inverse = np.linalg.inv(cell)
+    prefactor = (2.0 * np.pi * sigma**2) ** -1.5
+    for position, charge in zip(positions, charges):
+        delta = fractional - (position @ inverse)
+        delta -= np.round(delta)
+        cartesian = delta @ cell
+        squared = np.einsum("...k,...k->...", cartesian, cartesian)
+        rho += charge * prefactor * np.exp(-0.5 * squared / sigma**2)
+    return rho

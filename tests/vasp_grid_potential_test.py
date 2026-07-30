@@ -63,3 +63,44 @@ class TestMMChargeHandoff:
                 str(tmp_path / "MM_CHARGES"),
                 np.zeros((2, 3)), np.zeros(3), step=0, sigma=0.3,
             )
+
+
+CELL = np.diag([10.0, 10.0, 10.0])
+SHAPE = (48, 48, 48)
+
+
+class TestSpreadGaussian:
+
+    def test_conserves_charge(self):
+        positions = np.array([[5.0, 5.0, 5.0], [2.0, 3.0, 4.0]])
+        charges = np.array([1.0, -0.5])
+        rho = vasp_plugin.spread_gaussian(
+            positions, charges, SHAPE, CELL, sigma=0.4,
+        )
+        d_volume = abs(np.linalg.det(CELL)) / np.prod(SHAPE)
+        assert rho.sum() * d_volume == pytest.approx(0.5, abs=1e-6)
+
+    def test_peak_is_at_the_charge(self):
+        positions = np.array([[5.0, 5.0, 5.0]])
+        rho = vasp_plugin.spread_gaussian(
+            positions, np.array([1.0]), SHAPE, CELL, sigma=0.4,
+        )
+        peak = np.unravel_index(np.argmax(rho), SHAPE)
+        # 5.0 Angstrom on a 10 Angstrom / 48 point axis -> index 24.
+        assert peak == (24, 24, 24)
+
+    def test_wraps_across_the_periodic_boundary(self):
+        # A charge on the origin must not pile up at the far face;
+        # minimum-image wrapping makes the density symmetric about it.
+        rho = vasp_plugin.spread_gaussian(
+            np.array([[0.0, 5.0, 5.0]]), np.array([1.0]),
+            SHAPE, CELL, sigma=0.4,
+        )
+        assert rho[1, 24, 24] == pytest.approx(rho[-1, 24, 24], rel=1e-9)
+
+    def test_empty_selection_gives_zero_density(self):
+        rho = vasp_plugin.spread_gaussian(
+            np.zeros((0, 3)), np.zeros(0), SHAPE, CELL, sigma=0.4,
+        )
+        assert rho.shape == SHAPE
+        assert np.all(rho == 0.0)
