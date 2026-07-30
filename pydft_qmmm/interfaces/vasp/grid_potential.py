@@ -507,3 +507,44 @@ def contract_gaussian_gradient(
             "ijk,ijkc->c", weight, cartesian,
         ) / sigma**2
     return forces
+
+
+def electrostatic_potential_from_vasp(hartree, ion):
+    """Electrostatic potential of the QM system, in volts.
+
+    VASP hands the plugin the Hartree potential of the electrons and the
+    local potential of the ion cores, both ELECTRON-REFERENCED and in
+    eV: they are what an electron feels.  The electrostatic potential a
+    positive test charge feels is the negative of their sum.
+
+    That single sign is the same convention as V_ext = -phi elsewhere in
+    this package, and getting it backwards is what flipped every nuclear
+    force in Milestone 2.
+
+    Both fields are allocated by VASP whenever
+    PLUGINS/LOCAL_POTENTIAL = T, so a None here means the callback was
+    reached some other way rather than that an INCAR tag is missing.
+
+    Args:
+        hartree: constants.hartree_potential, or None.
+        ion: constants.ion_potential, or None.
+
+    Returns:
+        The electrostatic potential on the grid (volts).
+    """
+    if hartree is None or ion is None:
+        missing = "hartree_potential" if hartree is None else "ion_potential"
+        raise RuntimeError(
+            f"{missing} is None.  VASP allocates both whenever "
+            "PLUGINS/LOCAL_POTENTIAL = T, so this means the potentials "
+            "were never captured -- check that local_potential ran "
+            "before force_and_stress.",
+        )
+    hartree = np.asarray(hartree, dtype=np.float64)
+    ion = np.asarray(ion, dtype=np.float64)
+    if hartree.shape != ion.shape:
+        raise RuntimeError(
+            f"hartree_potential has shape {hartree.shape} but "
+            f"ion_potential has {ion.shape}.",
+        )
+    return -(hartree + ion)

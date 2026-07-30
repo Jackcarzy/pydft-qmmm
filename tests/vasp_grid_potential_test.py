@@ -901,3 +901,26 @@ class TestSyntheticThirdLaw:
         )[0]
         assert good == pytest.approx(-reference, rel=1e-6)
         assert not np.allclose(bad, -reference, rtol=1e-3)
+
+
+class TestVaspPotentialConversion:
+
+    def test_negates_the_electron_referenced_sum(self):
+        hartree = np.full((4, 4, 4), -2.0)
+        ion = np.full((4, 4, 4), -3.0)
+        got = grid_potential.electrostatic_potential_from_vasp(hartree, ion)
+        # VASP reports what an ELECTRON feels, in eV.  The electrostatic
+        # potential is the negative of that.
+        assert got == pytest.approx(np.full((4, 4, 4), 5.0))
+
+    def test_rejects_missing_fields(self):
+        with pytest.raises(RuntimeError, match="PLUGINS/LOCAL_POTENTIAL"):
+            grid_potential.electrostatic_potential_from_vasp(
+                None, np.zeros((4, 4, 4)),
+            )
+
+    def test_rejects_shape_mismatch(self):
+        with pytest.raises(RuntimeError, match="shape"):
+            grid_potential.electrostatic_potential_from_vasp(
+                np.zeros((4, 4, 4)), np.zeros((8, 8, 8)),
+            )
