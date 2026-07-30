@@ -848,3 +848,56 @@ class TestGaussianContraction:
             SHAPE, CELL, sigma=0.4,
         )
         assert got.shape == (0, 3)
+
+
+def poisson_of(positions, charges, sigma):
+    """Electrostatic potential (volts) of Gaussian charges on the grid."""
+    rho = grid_potential.spread_gaussian(
+        positions, charges, SHAPE, CELL, sigma,
+    )
+    return grid_potential.poisson_fft(rho, CELL)
+
+
+class TestSyntheticThirdLaw:
+
+    def test_two_gaussians_push_each_other_apart(self):
+        # Charge A makes a potential; charge B sits in it.  Compute the
+        # force on B by contraction, and the force on A by contracting
+        # B's potential.  They must be equal and opposite.
+        a_pos = np.array([[4.0, 5.0, 5.0]])
+        b_pos = np.array([[6.0, 5.0, 5.0]])
+        a_q = np.array([1.0])
+        b_q = np.array([1.0])
+        sigma = 0.5
+        phi_a = poisson_of(a_pos, a_q, sigma)
+        phi_b = poisson_of(b_pos, b_q, sigma)
+        force_on_b = grid_potential.contract_gaussian_gradient(
+            phi_a, b_pos, b_q, SHAPE, CELL, sigma,
+        )[0]
+        force_on_a = grid_potential.contract_gaussian_gradient(
+            phi_b, a_pos, a_q, SHAPE, CELL, sigma,
+        )[0]
+        assert force_on_a == pytest.approx(-force_on_b, rel=1e-6)
+        # Like charges: B (at larger x) is pushed to +x.
+        assert force_on_b[0] > 0.0
+
+    def test_mismatched_sigma_breaks_the_third_law(self):
+        # The guard that matters: contraction and spreading must agree
+        # on sigma.  If they drift apart the forces stop balancing, and
+        # this test is what would catch it.
+        a_pos = np.array([[4.0, 5.0, 5.0]])
+        b_pos = np.array([[6.0, 5.0, 5.0]])
+        charge = np.array([1.0])
+        phi_a = poisson_of(a_pos, charge, 0.5)
+        phi_b = poisson_of(b_pos, charge, 0.5)
+        good = grid_potential.contract_gaussian_gradient(
+            phi_a, b_pos, charge, SHAPE, CELL, 0.5,
+        )[0]
+        bad = grid_potential.contract_gaussian_gradient(
+            phi_a, b_pos, charge, SHAPE, CELL, 0.6,
+        )[0]
+        reference = grid_potential.contract_gaussian_gradient(
+            phi_b, a_pos, charge, SHAPE, CELL, 0.5,
+        )[0]
+        assert good == pytest.approx(-reference, rel=1e-6)
+        assert not np.allclose(bad, -reference, rtol=1e-3)
