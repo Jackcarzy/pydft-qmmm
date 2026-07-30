@@ -140,6 +140,18 @@ def _external_potential(constants):
         fh.write(f"sigma        = {sigma}\n")
         fh.write(f"min V_ext eV = {float(v_ext.min()):.6f}\n")
         fh.write(f"mean V_ext   = {float(v_ext.mean()):.3e}  (G=0 dropped)\n")
+        # M3 probe: are the potentials VASP hands us actually populated?
+        for name in ("charge_density", "hartree_potential", "ion_potential"):
+            field = getattr(constants, name, None)
+            if field is None:
+                fh.write(f"{name:13s}= None\n")
+            else:
+                array = np.asarray(field)
+                fh.write(
+                    f"{name:13s}= shape {array.shape} "
+                    f"min {float(array.min()):.4e} "
+                    f"max {float(array.max()):.4e}\n",
+                )
     return v_ext
 
 

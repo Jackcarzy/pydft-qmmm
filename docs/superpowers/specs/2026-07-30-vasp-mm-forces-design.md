@@ -91,6 +91,21 @@ So `local_potential` caches the potentials on every call and `force_and_stress`
 consumes the most recent. The plugin cannot detect which SCF call is last and
 does not need to: `force_and_stress` runs after all of them.
 
+**`LVHAR` is NOT required** — an earlier draft of this spec said it was. Both
+fields are allocated whenever `PLUGINS/LOCAL_POTENTIAL = T`:
+
+```fortran
+IF (INFO%PLUGIN%LOCAL_POTENTIAL) THEN
+   ALLOCATE(HARTREE_POTENTIAL(GRIDC%MPLWV)) ; ... FFT3D(...)
+ENDIF
+```
+
+Verified in a real run (job 11573109) by probing the callback: all three of
+`charge_density`, `hartree_potential` and `ion_potential` arrive populated with
+shape (140, 140, 392), no `LVHAR` set. `ion_potential` spans −61.1 to +2.3 eV —
+strongly negative near the cores, as an electron-referenced potential must be,
+which corroborates the sign convention above.
+
 Cost: two cached 320³ arrays, ~528 MB, about 1% of the 64 GB these runs already
 request.
 
@@ -132,8 +147,8 @@ contract exactly: count, step stamp, `%.12e`.
 
 ### Interface
 
-`_read_mm_forces()`; `compute_forces()` fills subsystem II rows; `_write_input`
-adds `LVHAR = .TRUE.` when embedding is active.
+`_read_mm_forces()`; `compute_forces()` fills subsystem II rows. No INCAR change
+is needed.
 
 ## Error handling
 
@@ -143,7 +158,7 @@ behaviour and therefore invisible without an explicit check.
 
 | failure | guard |
 |---|---|
-| `hartree_potential`/`ion_potential` are `None` | raise, naming `LVHAR = .TRUE.`; **no fallback** |
+| `hartree_potential`/`ion_potential` are `None` | raise; **no fallback**. Not an INCAR problem — see below |
 | `MM_FORCES` absent after an embedded run | raise, as the sentinel check already does |
 | stale `MM_FORCES` | step stamp, as `MM_CHARGES` uses |
 | forces identically zero | raise — otherwise indistinguishable from M2 |
