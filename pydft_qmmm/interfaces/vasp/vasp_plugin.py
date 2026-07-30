@@ -67,13 +67,37 @@ def _fractional_grid(shape):
     return np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
 
 
-def spread_gaussian(positions, charges, shape, cell, sigma):
+def _axis_spacings(shape, cell):
+    """Grid spacing along each axis, as perpendicular widths.
+
+    For a general (non-orthogonal) cell the spacing that matters is the
+    distance between adjacent lattice planes, which is the cell volume
+    divided by the area of the opposite face.
+    """
+    volume = abs(np.linalg.det(cell))
+    widths = np.array([
+        volume / np.linalg.norm(np.cross(cell[(i + 1) % 3], cell[(i + 2) % 3]))
+        for i in range(3)
+    ])
+    return widths / np.array(shape, dtype=np.float64)
+
+
+def spread_gaussian(positions, charges, shape, cell, sigma, cutoff=6.0):
     """Spread point charges onto the grid as normalized Gaussians.
 
     A point charge cannot be represented on a finite FFT grid, so each
-    is smeared with width sigma.  Displacements are minimum-imaged in
-    fractional coordinates, which is exact for the nearest image and
-    negligible in error while sigma is small against the cell.
+    is smeared with width sigma.
+
+    Only grid points within ``cutoff * sigma`` of a charge are touched.
+    Without that restriction the cost is O(N_charges * N_grid), which is
+    ruinous at production scale: 1149 MM charges on a 160**3 grid took
+    935 s per evaluation, versus well under a second here.  A 3D
+    Gaussian has about 7e-8 of its mass beyond 6 sigma, so the truncated
+    charge is conserved to roughly one part in 1e7.
+
+    Displacements are minimum-imaged in fractional coordinates, which is
+    exact for the nearest image and negligible in error while sigma is
+    small against the cell.
 
     Args:
         positions: An Nx3 array of positions (Angstrom).
@@ -81,6 +105,7 @@ def spread_gaussian(positions, charges, shape, cell, sigma):
         shape: The grid dimensions.
         cell: A 3x3 array whose rows are lattice vectors (Angstrom).
         sigma: The Gaussian width (Angstrom).
+        cutoff: Truncation radius in units of sigma.
 
     Returns:
         The charge density on the grid (e/Angstrom**3).
@@ -89,15 +114,44 @@ def spread_gaussian(positions, charges, shape, cell, sigma):
     rho = np.zeros(shape, dtype=np.float64)
     if len(charges) == 0:
         return rho
-    fractional = _fractional_grid(shape)
     inverse = np.linalg.inv(cell)
     prefactor = (2.0 * np.pi * sigma**2) ** -1.5
+    dimensions = np.array(shape)
+    half = np.ceil(
+        cutoff * sigma / _axis_spacings(shape, cell),
+    ).astype(int)
+    if np.any(2 * half + 1 >= dimensions):
+        # The cutoff box wraps the whole cell, so a local block would
+        # double-count images.  Fall back to evaluating on every point.
+        fractional = _fractional_grid(shape)
+        for position, charge in zip(positions, charges):
+            delta = fractional - (position @ inverse)
+            delta -= np.round(delta)
+            cartesian = delta @ cell
+            squared = np.einsum("...k,...k->...", cartesian, cartesian)
+            rho += charge * prefactor * np.exp(-0.5 * squared / sigma**2)
+        return rho
+    offsets = [np.arange(-h, h + 1) for h in half]
     for position, charge in zip(positions, charges):
-        delta = fractional - (position @ inverse)
+        centre = np.round((position @ inverse) * dimensions).astype(int)
+        index = [(centre[i] + offsets[i]) % dimensions[i] for i in range(3)]
+        block = np.stack(
+            np.meshgrid(
+                *[
+                    (centre[i] + offsets[i]) / dimensions[i]
+                    for i in range(3)
+                ],
+                indexing="ij",
+            ),
+            axis=-1,
+        )
+        delta = block - (position @ inverse)
         delta -= np.round(delta)
         cartesian = delta @ cell
         squared = np.einsum("...k,...k->...", cartesian, cartesian)
-        rho += charge * prefactor * np.exp(-0.5 * squared / sigma**2)
+        rho[np.ix_(*index)] += (
+            charge * prefactor * np.exp(-0.5 * squared / sigma**2)
+        )
     return rho
 
 

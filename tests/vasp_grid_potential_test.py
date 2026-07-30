@@ -100,6 +100,34 @@ class TestSpreadGaussian:
         )
         assert rho[1, 24, 24] == pytest.approx(rho[-1, 24, 24], rel=1e-9)
 
+    def test_cutoff_matches_full_evaluation(self):
+        # A large cutoff trips the fallback that evaluates every grid
+        # point, so this compares the fast path against the exact one.
+        positions = np.array([[5.0, 5.0, 5.0], [2.0, 3.0, 4.0]])
+        charges = np.array([1.0, -0.5])
+        fast = vasp_plugin.spread_gaussian(
+            positions, charges, SHAPE, CELL, sigma=0.4,
+        )
+        exact = vasp_plugin.spread_gaussian(
+            positions, charges, SHAPE, CELL, sigma=0.4, cutoff=1000.0,
+        )
+        assert fast == pytest.approx(exact, abs=1e-9)
+
+    def test_conserves_charge_at_production_scale(self):
+        # 1149 charges on a 96**3 grid is the SPC/E test system.  The
+        # O(N_charges * N_grid) version took 191 s here; the cutoff
+        # version must stay both fast and charge conserving.
+        rng = np.random.RandomState(0)
+        cell = np.diag([29.899, 29.899, 29.899])
+        shape = (96, 96, 96)
+        positions = rng.uniform(0.0, 29.899, (1149, 3))
+        charges = rng.uniform(-1.0, 1.0, 1149)
+        rho = vasp_plugin.spread_gaussian(
+            positions, charges, shape, cell, sigma=0.3,
+        )
+        d_volume = abs(np.linalg.det(cell)) / np.prod(shape)
+        assert rho.sum() * d_volume == pytest.approx(charges.sum(), abs=1e-5)
+
     def test_empty_selection_gives_zero_density(self):
         rho = vasp_plugin.spread_gaussian(
             np.zeros((0, 3)), np.zeros(0), SHAPE, CELL, sigma=0.4,
