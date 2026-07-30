@@ -358,22 +358,26 @@ def local_potential(constants, additions):
     Defines the PLUGINS/LOCAL_POTENTIAL interface.  Called once per SCF
     step.
 
-    Also reports the associated energy.  VASP does NOT account for this
-    automatically: pot.F passes additions.total_energy straight into
-    E%EPLUGINS (assigning, not accumulating), and electron.F sums
+    additions.total_energy is deliberately LEFT ALONE.  MEASURED, not
+    assumed (jobs 11566990 and 11567275):
 
-        TOTEN = EBANDSTR + DENC + ... + Ediel_sol + ESCPC + EPLUGINS
+        without an energy term  analytical - numerical = (14, 14, 5)
+        reporting int(rho V_ext) ->                      (-266, -985, 217)
+        the nuclear correction itself is                 (-272, -950, 205)
 
-    so leaving it at zero makes TOTEN inconsistent with the forces,
-    which DO include the full effect.  That inconsistency is exactly
-    what the Tier 2 finite-difference test measured.
+    Adding the term shifted the result by very nearly the whole nuclear
+    correction, i.e. by the electronic response that almost cancels it.
+    So VASP's TOTEN ALREADY contains int(rho V_ext): the band-structure
+    energy picks it up once V_ext is added to the local potential, and
+    nothing subtracts it again.  E%EPLUGINS exists for energies VASP
+    cannot know about -- a field's self-energy, a constraint term --
+    not for this one.
+
+    This contradicts what the design document guessed, and is the reason
+    the Tier 2 test was written as a measurement rather than a check.
     """
     try:
-        v_ext = _external_potential(constants)
-        additions.total_potential += v_ext
-        additions.total_energy = electron_interaction_energy(
-            constants.charge_density, v_ext,
-        )
+        additions.total_potential += _external_potential(constants)
     except Exception as exc:
         _record_error(exc)
         raise

@@ -548,25 +548,21 @@ class TestElectronInteractionEnergy:
                 np.zeros((4, 4, 4)), np.zeros((8, 8, 8)),
             )
 
-    def test_local_potential_reports_the_energy(self, tmp_path, monkeypatch):
+    def test_local_potential_does_not_report_an_energy(self, tmp_path, monkeypatch):
+        # MEASURED (jobs 11566990 / 11567275): VASP's TOTEN already
+        # contains int(rho V_ext), so setting additions.total_energy
+        # double-counts and shifts the forces by the whole nuclear
+        # correction.  electron_interaction_energy is kept because it
+        # documents the normalization, but it must not be wired in.
         monkeypatch.chdir(tmp_path)
         vasp_utils.write_mm_charges(
             "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
             step=0, sigma=0.4,
         )
         vasp_plugin.reset_cache()
-        constants = _constants(SHAPE, CELL)
-        # A UNIFORM density would give exactly zero: V_ext has zero mean
-        # by the G=0 convention, so only a density that overlaps the
-        # well contributes.  Concentrate the electrons on the charge.
-        density = np.zeros(SHAPE)
-        density[22:27, 22:27, 22:27] = 1.0
-        density *= 8.0 * density.size / density.sum()
-        constants.charge_density = density
         additions = _additions(SHAPE)
-        vasp_plugin.local_potential(constants, additions)
-        # Electrons sitting in an attractive well must lower the energy.
-        assert additions.total_energy < 0.0
+        vasp_plugin.local_potential(_constants(SHAPE, CELL), additions)
+        assert additions.total_energy == 0.0
 
     def test_uniform_density_gives_zero_energy(self):
         # V_ext has zero mean (the G=0 term is dropped), so a uniform
