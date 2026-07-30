@@ -221,11 +221,15 @@ class TestGradients:
             directory=str(vasp_workdir / "vasp"),
             pp_path=vasp_pp_library,
             embedding=True,
-            # ENCUT is reduced from the default 400 and EDIFF tightened:
-            # this test needs the energy and force of the SAME functional
-            # to agree, not production accuracy, and it costs seven VASP
-            # launches.
-            incar={"ENCUT": 300, "EDIFF": 1e-7},
+# ISTART=0 on EVERY evaluation.  The interface normally
+            # restarts from the previous WAVECAR, which is right for MD
+            # but poisons a finite difference: run #1 initializes from
+            # atomic superposition, run #2 (x+) restarts from THAT, and
+            # run #3 (x-) restarts from x+.  Only the x pair has
+            # mismatched restart histories, and the unembedded control
+            # showed exactly that signature -- x off by -3.43 kJ/mol/A
+            # while y and z agreed to 0.03.
+            incar={"ENCUT": 300, "EDIFF": 1e-7, "ISTART": 0},
         )
         calculator = PotentialCalculator(vasp_qmmm_system, potential)
         analytical = calculator.calculate().forces[0]
@@ -253,7 +257,8 @@ class TestGradients:
             directory=str(vasp_workdir / "vasp"),
             pp_path=vasp_pp_library,
             embedding=False,
-            incar={"ENCUT": 300, "EDIFF": 1e-7},
+            # See the note in the embedded test: independent evaluations.
+            incar={"ENCUT": 300, "EDIFF": 1e-7, "ISTART": 0},
         )
         calculator = PotentialCalculator(vasp_qmmm_system, potential)
         analytical = calculator.calculate().forces[0]
