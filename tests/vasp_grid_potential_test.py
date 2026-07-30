@@ -5,6 +5,8 @@ so it can be exercised directly.
 """
 from __future__ import annotations
 
+import types
+
 import numpy as np
 import pytest
 
@@ -298,3 +300,197 @@ class TestCoulombLimit:
         # Below the knee the residual is periodic-image error only.
         assert residual(0.4) == pytest.approx(residual(0.25), rel=1e-3)
         assert residual(0.25) < 0.05 * expected
+
+
+def _constants(shape, cell, positions=None, zval=11.0):
+    """Mimic VASP's Constants dataclasses.
+
+    Field names verified against
+    vasp.6.6.1/src/plugins/src/vasp/_local_potential.py and
+    _force_and_stress.py.  positions are FRACTIONAL, and ion_types
+    arrives already 0-indexed because _adjust_dataclass.adjust_indexing
+    subtracts one from every IndexArray before the plugin sees it.
+    """
+    if positions is None:
+        positions = np.zeros((0, 3))
+    return types.SimpleNamespace(
+        shape_grid=np.array(shape),
+        lattice_vectors=np.asarray(cell, dtype=np.float64),
+        positions=np.asarray(positions) @ np.linalg.inv(cell),
+        ion_types=np.zeros(len(positions), dtype=int),
+        ZVAL=np.array([zval]),
+        charge_density=None,
+    )
+
+
+def _additions(shape):
+    return types.SimpleNamespace(
+        total_potential=np.zeros(shape),
+        total_energy=0.0,
+        forces=np.zeros((1, 3)),
+    )
+
+
+class TestCallbacks:
+
+    def test_local_potential_adds_a_negative_well(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        additions = _additions(SHAPE)
+        vasp_plugin.local_potential(_constants(SHAPE, CELL), additions)
+        assert additions.total_potential[24, 24, 24] < 0.0
+        assert (tmp_path / vasp_plugin.SENTINEL).exists()
+
+    def test_local_potential_builds_the_field_once(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        calls = []
+        original = vasp_plugin.build_external_potential
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(vasp_plugin, "build_external_potential", counted)
+        constants = _constants(SHAPE, CELL)
+        for _ in range(3):
+            vasp_plugin.local_potential(constants, _additions(SHAPE))
+        assert len(calls) == 1
+
+    def test_missing_charges_file_raises_and_records(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_plugin.reset_cache()
+        with pytest.raises(Exception):
+            vasp_plugin.local_potential(_constants(SHAPE, CELL), _additions(SHAPE))
+        assert (tmp_path / vasp_plugin.ERROR_FILE).exists()
+
+    def test_empty_selection_is_a_no_op(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.zeros((0, 3)), np.zeros(0), step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        additions = _additions(SHAPE)
+        vasp_plugin.local_potential(_constants(SHAPE, CELL), additions)
+        assert np.all(additions.total_potential == 0.0)
+
+    def test_net_charge_warns(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        with pytest.warns(RuntimeWarning, match="net charge"):
+            vasp_plugin.local_potential(_constants(SHAPE, CELL), _additions(SHAPE))
+
+    def test_grid_change_rebuilds_the_cache(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        vasp_plugin.local_potential(_constants(SHAPE, CELL), _additions(SHAPE))
+        other = (32, 32, 32)
+        additions = _additions(other)
+        vasp_plugin.local_potential(_constants(other, CELL), additions)
+        assert additions.total_potential.shape == other
+        assert additions.total_potential.min() < 0.0
+
+    def test_force_and_stress_applies_the_nuclear_terms(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        # One MM charge at the cell centre, one QM ion offset from it
+        # along x.  A positive MM charge attracts the positive pseudo-ion
+        # core... no: like charges repel, so the ion is pushed AWAY,
+        # towards +x.
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        ion = np.array([[7.0, 5.0, 5.0]])
+        constants = _constants(SHAPE, CELL, positions=ion, zval=11.0)
+        additions = _additions(SHAPE)
+        vasp_plugin.force_and_stress(constants, additions)
+        # dE_I = -Z_I V_ext(R_I); V_ext < 0 near a positive charge, so
+        # the energy correction is positive (repulsion).
+        assert additions.total_energy > 0.0
+        assert additions.forces[0, 0] > 0.0
+        assert additions.forces[0, 1] == pytest.approx(0.0, abs=1e-9)
+
+    def test_force_and_stress_with_no_ions_is_a_no_op(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        additions = _additions(SHAPE)
+        vasp_plugin.force_and_stress(_constants(SHAPE, CELL), additions)
+        assert additions.total_energy == 0.0
+        assert np.all(additions.forces == 0.0)
+
+    def test_energy_and_force_corrections_are_consistent(self, tmp_path, monkeypatch):
+        # The force must be the negative gradient of the energy it
+        # accompanies.  Writing dF = -Z grad V_ext alongside
+        # dE = -Z V_ext (as the spec originally did) flips every nuclear
+        # force; this finite-difference check pins them together.
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.8,
+        )
+
+        def energy_at(x):
+            vasp_plugin.reset_cache()
+            constants = _constants(
+                SHAPE, CELL, positions=np.array([[x, 5.3, 4.7]]),
+            )
+            additions = _additions(SHAPE)
+            vasp_plugin.force_and_stress(constants, additions)
+            return additions.total_energy, additions.forces[0, 0]
+
+        step = 10.0 / SHAPE[0]
+        _, force_x = energy_at(7.0)
+        plus, _ = energy_at(7.0 + step)
+        minus, _ = energy_at(7.0 - step)
+        numerical = -(plus - minus) / (2 * step)
+        assert force_x == pytest.approx(numerical, rel=0.05)
+
+    def test_like_charges_repel(self, tmp_path, monkeypatch):
+        # A +1 e MM charge and a +11 e pseudo-ion must push apart.
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        additions = _additions(SHAPE)
+        vasp_plugin.force_and_stress(
+            _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]])),
+            additions,
+        )
+        assert additions.forces[0, 0] > 0.0
+
+    def test_opposite_charges_attract(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([-1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        additions = _additions(SHAPE)
+        vasp_plugin.force_and_stress(
+            _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]])),
+            additions,
+        )
+        assert additions.forces[0, 0] < 0.0

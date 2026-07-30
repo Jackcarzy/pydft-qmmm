@@ -16,6 +16,10 @@
 - **`Z_I` is `ZVAL`** (pseudopotential valence charge), not atomic number. Access as `constants.ZVAL[constants.ion_types[i]]`. For Au this is 11, not 79.
 - **G=0 is set to zero** in the Poisson solve (uniform neutralizing background).
 - Test files are named `*_test.py`, not `test_*.py` — match the existing repo convention.
+- **Never set `PLUGINS/MODE`.** It defaults to `serial` (`src/plugins.F:196-198`), and that default is what makes this design correct under MPI: only rank 1 calls the plugin, it receives the **full gathered** grid, and the result is broadcast back and redistributed. Under `PLUGINS/MODE = parallel` every rank would call the plugin with its own grid *slab*, and a full-grid `V_ext` would be silently wrong. Verified in `plugins.F`: `buffer%active_rank = mode /= "serial" .or. comm%node_me == 1`, `buffer%broadcast = mode == "serial"`, plus `merge_grid_quantity`.
+- `ConstantsLocalPotential.charge_density` is `Optional` and may be `None`. Guard before using it.
+- `ion_types` arrives **already 0-indexed** — `_adjust_dataclass.adjust_indexing` subtracts 1 from every `IndexArray`. Do not subtract again.
+- All arrays on `constants` are **read-only** (`freeze_arrays` sets `writeable = False`). Arrays on `additions` are writable, so in-place `+=` on `total_potential`/`forces` is correct.
 - Target build: `install/vasp/vasp.6.6.1_nvhpc24/bin/vasp_std` with `OMP_NUM_THREADS=8`, modules `nvhpc-openmpi3/24.1` + `intel-oneapi-mkl`, **no hdf5 module**, `LD_LIBRARY_PATH` → `~/.conda/envs/vasp_plugin/lib`.
 - Spec: `docs/superpowers/specs/2026-07-30-vasp-electrostatic-embedding-design.md`
 
@@ -823,8 +827,12 @@ def force_and_stress(constants, additions):
 
     VASP does not include the interaction of the external potential with
     the pseudo-ion cores, so add dE_I = -Z_I V_ext(R_I) and
-    dF_I = -Z_I grad V_ext(R_I).  Z_I is the pseudopotential valence
+    dF_I = +Z_I grad V_ext(R_I).  Z_I is the pseudopotential valence
     charge ZVAL, not the atomic number.
+
+    NOTE THE FORCE SIGN: F = -grad(dE) = -grad(-Z V_ext) = +Z grad V_ext.
+    An earlier draft of this plan wrote -Z grad V_ext, which contradicts
+    the energy term and flips every nuclear force.
     """
     try:
         v_ext = _external_potential(constants)
@@ -1317,11 +1325,19 @@ In `vasp_plugin.local_potential`, after adding to `total_potential`:
         # VASP's TOTEN does not include the electron-V_ext term when the
         # plugin supplies total_potential, so add it here.  Established
         # empirically by the Tier 2 finite-difference test, not assumed.
+        if constants.charge_density is None:
+            raise RuntimeError(
+                "charge_density is None, so the electron-V_ext energy "
+                "term cannot be formed.  Set LVHAR = .TRUE. in the "
+                "INCAR so VASP populates it.",
+            )
         additions.total_energy += float(
             np.sum(constants.charge_density * v_ext)
             * abs(np.linalg.det(cell)) / v_ext.size
         )
 ```
+
+Note `charge_density` is declared `Optional[DoubleArray] = None` in `ConstantsLocalPotential`, hence the guard. The reference plugin `VASP-Python/H_in_constant_field/INCAR` sets `LVHAR = .TRUE.`, which is why it has the field populated.
 
 Re-run Step 2 and confirm the gradient now matches.
 

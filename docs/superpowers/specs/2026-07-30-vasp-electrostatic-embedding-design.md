@@ -19,7 +19,21 @@ mechanical embedding. This is §3.4 of the Todorova manuscript
 - Energy and QM forces correct under electrostatic embedding.
 - The `close_range="electrostatic"` (cutoff) scheme.
 - The Eq. 3-4 corrections VASP omits: `ΔE_I = −Z_I·V_ext(R_I)` and
-  `ΔF_I = −Z_I·∇V_ext(R_I)`.
+  `ΔF_I = +Z_I·∇V_ext(R_I)`.
+
+  **Correction, 2026-07-30 (found during implementation).** This document
+  originally wrote the force as `ΔF_I = −Z_I·∇V_ext(R_I)`, matching the
+  manuscript's Eq. 4 as transcribed. That is **inconsistent with Eq. 3** and
+  flips every nuclear force. The force must be the negative gradient of the
+  energy it accompanies:
+
+  `F = −∇(ΔE_I) = −∇(−Z_I·V_ext) = +Z_I·∇V_ext`
+
+  Verified physically: for an MM charge of +1 e and a pseudo-ion of +11 e two
+  Ångström away, `V_ext` is negative and rising with r, so `∇V_ext > 0` and the
+  ion is pushed away — repulsion, as two positive charges must. With the
+  original sign the ion was attracted, at −38.4 eV/Å. Caught by the Tier 1
+  analytic tests rather than waiting for the Tier 2 finite-difference run.
 
   **`Z_I` is the pseudopotential valence charge `ZVAL`, not the atomic number.**
   VASP's nuclei are pseudo-ions carrying only valence charge, so using the
