@@ -239,7 +239,12 @@ def evaluate_math(line: list[str], system: System) -> NDArray[np.float64]:
     entry = line[count]
     if entry.lower() in VARIABLES:
         var = VARIABLES[entry.lower()]
-        value += getattr(system, var[0])[:, *var[1]]
+        # Spelled as an explicit index tuple rather than [:, *var[1]]:
+        # starred unpacking inside a subscript is PEP 646 syntax and a
+        # SyntaxError before Python 3.11, while pyproject.toml declares
+        # requires-python = ">=3.10".  This form is equivalent on every
+        # supported version.
+        value += getattr(system, var[0])[(slice(None), *var[1])]
     elif isvalue(entry):
         value += float(entry)
     elif entry.split(" ")[0].lower() in SELECTORS:
@@ -369,7 +374,10 @@ def interpret(line: list[str], system: System) -> frozenset[int]:
                     )
             elif attribute.lower() in VARIABLES:
                 var = VARIABLES[attribute.lower()]
-                value = getattr(system, var[0])[:, *var[1]]
+                # See the note at the other call site: explicit index
+                # tuple, because [:, *var[1]] is PEP 646 syntax and a
+                # SyntaxError before Python 3.11.
+                value = getattr(system, var[0])[(slice(None), *var[1])]
                 atoms = frozenset(
                     {i for i, x in enumerate(value)
                      if x in value[sorted(atoms)]},
