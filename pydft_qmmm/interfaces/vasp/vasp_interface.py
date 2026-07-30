@@ -248,10 +248,13 @@ class VaspInterface(QMInterface):
         """
         order = self._write_input()
         if self.embedding:
+            # Always write the near-field charges.  Under PME they are
+            # excluded from the reciprocal sum and must be reinstated
+            # analytically; without them the QM region feels only the
+            # long-range tail.
+            self._write_mm_charges()
             if self.potentials:
                 self._write_pme_data()
-            else:
-                self._write_mm_charges()
         vasp_utils.run_vasp(self.command, self.directory)
         if self.embedding:
             self._check_plugin_fired()

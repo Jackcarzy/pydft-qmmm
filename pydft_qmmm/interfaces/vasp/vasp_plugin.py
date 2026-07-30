@@ -92,14 +92,28 @@ def _external_potential(constants):
             from .pme_external import build_pme_potential
         except ImportError:
             from pme_external import build_pme_potential
-        v_ext = build_pme_potential(PME_FILE, shape, cell)
+        v_pme = build_pme_potential(PME_FILE, shape, cell)
+        # PME alone is NOT the whole potential.  compute_P_adj removed
+        # subsystems I and II from the reciprocal sum, so the near field
+        # has to be put back explicitly -- Pederson & McDaniel, JCP 156,
+        # 174105 (2022), approach "2": exclusions (Eq. 12) PLUS analytic
+        # embedding (Eq. 15).  Returning v_pme on its own drops the
+        # dominant near-field term: it gave min V_ext = -2.6 eV where
+        # the cutoff scheme gives -11.0 eV for the same system.
+        positions, charges, _, sigma = read_mm_charges(CHARGE_FILE)
+        v_near = build_external_potential(
+            positions, charges, shape, cell, sigma,
+        )
+        v_ext = v_pme + v_near
         _CACHE["shape"] = shape
         _CACHE["v_ext"] = v_ext
         with open(SENTINEL, "w") as fh:
-            fh.write("local_potential callback executed (PME)\n")
+            fh.write("local_potential callback executed (PME + analytic)\n")
             fh.write(f"shape_grid   = {shape}\n")
+            fh.write(f"near charges = {len(charges)}\n")
+            fh.write(f"min V_pme eV = {float(v_pme.min()):.6f}\n")
+            fh.write(f"min V_near eV= {float(v_near.min()):.6f}\n")
             fh.write(f"min V_ext eV = {float(v_ext.min()):.6f}\n")
-            fh.write(f"mean V_ext   = {float(v_ext.mean()):.3e}\n")
         return v_ext
     positions, charges, _, sigma = read_mm_charges(CHARGE_FILE)
     net_charge = float(np.sum(charges)) if len(charges) else 0.0
