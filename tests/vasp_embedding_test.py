@@ -342,7 +342,18 @@ class TestPME:
         # refinement (-34.3, -56.7, -67.1 eV at 30/60/120**3) instead of
         # converging.  At alpha = 0.35 it is converged to four decimals
         # already at 30**3.
-        pme = PMEElectronicPotential(vasp_pme_system, 0.35, (30, 30, 30), 6)
+        # 100**3 over 29.899 A is 0.30 A spacing, inside the 0.24-0.34 A
+        # range Pederson & McDaniel recommend (JCP 156, 174105 (2022),
+        # Fig. 4).  Their point is that PME grid size sets the accuracy
+        # of interpolating the potential onto the DFT grid, and that
+        # such grids are far finer than MD practice yet essentially free
+        # because the QM calculation dominates the cost.
+        #
+        # 30**3 (1.0 A) is coarser than anything they recommend.  A
+        # single-probe convergence check here looked converged by
+        # 0.5-0.66 A, but that is much weaker evidence than their
+        # interaction-energy study, so follow the paper.
+        pme = PMEElectronicPotential(vasp_pme_system, 0.35, (100, 100, 100), 6)
         potential.add_electronic_potential(pme)
         energy = potential.compute_energy()
         sentinel = os.path.join(potential.directory, vasp_plugin.SENTINEL)
