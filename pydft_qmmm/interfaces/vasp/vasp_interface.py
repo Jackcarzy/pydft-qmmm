@@ -18,6 +18,7 @@ from __future__ import annotations
 __all__ = ["VaspInterface", "VaspPotential"]
 
 import os
+import shutil
 from dataclasses import dataclass
 from dataclasses import field
 from typing import TYPE_CHECKING
@@ -71,6 +72,8 @@ class VaspInterface(QMInterface):
     kpts: tuple[int, int, int]
     pp_path: str
     potcar_map: dict[str, str]
+    embedding: bool = False
+    embedding_sigma: float = 0.3
     potentials: list[ElectronicPotential] = field(
         default_factory=list,
         init=False,
@@ -128,6 +131,19 @@ class VaspInterface(QMInterface):
         tags = dict(self.incar)
         # Single point only; PyDFT-QMMM owns the dynamics.
         tags.update({"NSW": 0, "IBRION": -1})
+        if self.embedding:
+            # PLUGINS/MODE is deliberately left unset.  It defaults to
+            # "serial", which is what makes this correct under MPI: only
+            # rank 1 calls the plugin, it receives the FULL gathered
+            # grid, and the addition is broadcast back.  Under
+            # PLUGINS/MODE = parallel every rank would be handed its own
+            # grid slab and a full-grid V_ext would be silently wrong.
+            tags["PLUGINS/LOCAL_POTENTIAL"] = "T"
+            tags["PLUGINS/FORCE_AND_STRESS"] = "T"
+            shutil.copyfile(
+                os.path.join(os.path.dirname(__file__), "vasp_plugin.py"),
+                os.path.join(self.directory, "vasp_plugin.py"),
+            )
         # Reuse the previous step's orbitals and density once they exist.
         if self.frame[0] and os.path.isfile(
                 os.path.join(self.directory, "WAVECAR"),
@@ -139,7 +155,51 @@ class VaspInterface(QMInterface):
         )
         return order
 
-    @system_cache("positions", "elements", "subsystems", "box")
+    def _write_mm_charges(self) -> int:
+        r"""Write subsystem II point charges for the plugin.
+
+        Returns:
+            The number of MM charges written.
+        """
+        os.makedirs(self.directory, exist_ok=True)
+        indices = sorted(self.system.select("subsystem II"))
+        positions = np.asarray(self.system.positions)[indices]
+        charges = np.asarray(self.system.charges)[indices]
+        path = os.path.join(self.directory, "MM_CHARGES")
+        # Delete before rewriting so that a failed write surfaces as a
+        # missing file rather than leaving the previous step's charges
+        # in place to be silently reused.
+        if os.path.isfile(path):
+            os.remove(path)
+        vasp_utils.write_mm_charges(
+            path, positions, charges, self.frame[0], self.embedding_sigma,
+        )
+        return len(charges)
+
+    def _check_plugin_fired(self) -> None:
+        """Verify that the plugin actually ran.
+
+        Raises:
+            VaspExecutionError: If the sentinel is absent, which means
+                the external potential was never applied and the energy
+                is quietly the unembedded one.
+
+        Note that grepping the binary for "not compiled with PLUGINS"
+        does NOT work as a check -- that string is present in every
+        build, plugin-enabled or not.
+        """
+        from .vasp_plugin import SENTINEL
+        if not os.path.isfile(os.path.join(self.directory, SENTINEL)):
+            raise vasp_utils.VaspExecutionError(
+                self.directory,
+                "Electrostatic embedding was requested but the plugin "
+                "sentinel is absent, so the external potential was "
+                "never applied.  Check that vasp_std is built with "
+                "-DPLUGINS and that PYTHONHOME and PATH point at the "
+                "environment holding the plugin's Python.",
+            )
+
+    @system_cache("positions", "elements", "subsystems", "box", "charges")
     def _run(self) -> tuple[float, NDArray[np.float64]]:
         r"""Run VASP on the QM subsystem.
 
@@ -150,7 +210,11 @@ class VaspInterface(QMInterface):
             ``sorted(system.select("subsystem I"))``.
         """
         order = self._write_input()
+        if self.embedding:
+            self._write_mm_charges()
         vasp_utils.run_vasp(self.command, self.directory)
+        if self.embedding:
+            self._check_plugin_fired()
         energy, forces = vasp_utils.read_vasprun(
             os.path.join(self.directory, "vasprun.xml"),
         )

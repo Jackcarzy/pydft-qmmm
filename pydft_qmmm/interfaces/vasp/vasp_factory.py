@@ -48,6 +48,8 @@ def vasp_interface_factory(
         pp_path: str | None = None,
         potcar_map: dict[str, str] | None = None,
         incar: dict[str, Any] | None = None,
+        embedding: bool = False,
+        embedding_sigma: float = 0.3,
         **options: Any,
 ) -> VaspPotential:
     r"""Build the interface to VASP.
@@ -73,6 +75,18 @@ def vasp_interface_factory(
         incar: INCAR tags to merge over :data:`DEFAULT_INCAR`.  Use this
             for tags whose names are not Python identifiers, such as
             ``{"PLUGINS/LOCAL_POTENTIAL": True}``.
+        embedding: Whether to electrostatically embed subsystem II point
+            charges via the VASP Python plugin.  Requires a VASP binary
+            built with ``-DPLUGINS``, and ``PYTHONHOME``/``PATH``
+            pointing at an environment whose Python has numpy.  When
+            ``False``, VASP sees only the QM subsystem and QM/MM
+            coupling is left to the MM force field.
+        embedding_sigma: The Gaussian width
+            (:math:`\mathrm{\mathring{A}}`) used to represent MM point
+            charges on VASP's FFT grid.  A point charge cannot be
+            represented exactly on a finite grid, so it is smeared.
+            Should comfortably exceed the grid spacing: too small
+            aliases, too large over-softens the near field.
         options: Additional INCAR tags given as keyword arguments; the
             names are upper-cased, so ``encut=520`` sets ``ENCUT``.
             These take precedence over ``incar``.
@@ -101,6 +115,10 @@ def vasp_interface_factory(
             "holding per-species POTCAR subdirectories, e.g. "
             "'.../pseudopotential/potpaw_PBE.54'.",
         )
+    if embedding_sigma <= 0.0:
+        raise ValueError(
+            f"embedding_sigma must be positive, got {embedding_sigma}.",
+        )
     tags = dict(DEFAULT_INCAR)
     if incar is not None:
         tags.update(incar)
@@ -114,4 +132,6 @@ def vasp_interface_factory(
         tuple(kpts),
         pp_path,
         {} if potcar_map is None else dict(potcar_map),
+        embedding,
+        embedding_sigma,
     )
