@@ -234,11 +234,16 @@ module-scope import discipline above, this is a file move rather than a rewrite.
 Phase B is also what makes the PME path tractable, since `helpme_py` installed
 into the `vasp_plugin` conda env is importable from the plugin process.
 
-## Open questions
+## Answered by measurement
 
-1. **Does VASP's `TOTEN` already include `∫ρ·V_ext`** once the plugin modifies
-   `total_potential`, or must the plugin add it via `additions.total_energy`?
-   Deliberately not guessed. Tier 2 measures it.
+1. **Does VASP's `TOTEN` already include `∫ρ·V_ext`?** **Yes.** Reporting it via
+   `additions.total_energy` shifted the finite-difference discrepancy from
+   (14, 14, 5) to (-266, -985, 217) kJ/mol/A -- a change of nearly the whole
+   nuclear correction (-272, -950, 205), i.e. the electronic response that
+   almost cancels it. `E%EPLUGINS` exists for energies VASP cannot know about,
+   not this one. Jobs 11566990 and 11567275. This contradicted the guess
+   recorded here originally, which is why the test was written as a
+   measurement rather than a check.
 
 ## Decisions already taken
 
@@ -247,7 +252,10 @@ into the `vasp_plugin` conda env is importable from the plugin process.
   121.6 s with the plugin active) and energy-identical to the nvhpc 25.5 build
   to 8 digits. Run it with `nvhpc-openmpi3/24.1` + `intel-oneapi-mkl`, **no hdf5
   module** (that build has `-DVASP_HDF5` off), and `LD_LIBRARY_PATH` pointing at
-  the `vasp_plugin` conda env's `lib`.
+  the **`vasp_qmmm`** conda env's `lib`.  That env is python 3.10.20 (matching
+  the linked libpython3.10) AND carries pydft_qmmm, pytest and helpme_py, so
+  driver and plugin share one interpreter and the wrapper script that used to
+  isolate them is retired.
 - **`NSIM = 16`** in the INCAR (~5% faster than the default 4; 32 and 64 are
   worse).
 
