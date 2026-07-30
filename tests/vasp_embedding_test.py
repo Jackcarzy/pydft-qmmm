@@ -133,3 +133,78 @@ class TestFactory:
                 embedding=True,
                 embedding_sigma=bad,
             )
+
+
+requires_vasp = pytest.mark.skipif(
+    not os.environ.get("PYDFT_QMMM_VASP_COMMAND"),
+    reason="set PYDFT_QMMM_VASP_COMMAND to run VASP-backed tests",
+)
+
+
+@requires_vasp
+class TestSmoke:
+    """Tier 0: does the plugin actually fire inside a real VASP run?"""
+
+    def test_plugin_fires_and_perturbs_the_energy(self, vasp_embedded):
+        energy = vasp_embedded.compute_energy()
+        sentinel = os.path.join(vasp_embedded.directory, vasp_plugin.SENTINEL)
+        assert os.path.isfile(sentinel), (
+            "no sentinel: the plugin never ran, so the energy is the "
+            "unembedded one"
+        )
+        with open(sentinel) as fh:
+            report = fh.read()
+        assert "mm_charges" in report
+        assert np.isfinite(energy)
+        print("\n" + report)
+
+    def test_zero_charges_reproduce_the_unembedded_energy(
+            self, vasp_qmmm_system, tmp_path, vasp_pp_library,
+    ):
+        # The control: machinery fully active, physics inert.  Separates
+        # "the plumbing is a no-op when it should be" from "the physics
+        # is right".
+        vasp_qmmm_system.charges[:] = 0.0
+        plain = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(tmp_path / "plain"),
+            pp_path=vasp_pp_library,
+        ).compute_energy()
+        embedded = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(tmp_path / "embed"),
+            pp_path=vasp_pp_library,
+            embedding=True,
+        ).compute_energy()
+        assert embedded == pytest.approx(plain, abs=1e-5)
+
+
+@requires_vasp
+class TestGradients:
+    """Tier 2: are the returned forces the gradient of the energy?
+
+    This also settles the spec's open question about whether VASP's TOTEN
+    already contains the electron-V_ext term: if it does not, energy and
+    forces disagree by exactly that term.
+    """
+
+    def test_embedded_forces_match_numerical_gradient(
+            self, vasp_qmmm_system, tmp_path, vasp_pp_library,
+    ):
+        from pydft_qmmm.calculators import PotentialCalculator
+        from pydft_qmmm.utils import numerical_gradient
+        potential = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(tmp_path / "vasp"),
+            pp_path=vasp_pp_library,
+            embedding=True,
+            # ENCUT is reduced from the default 400 and EDIFF tightened:
+            # this test needs the energy and force of the SAME functional
+            # to agree, not production accuracy, and it costs seven VASP
+            # launches.
+            incar={"ENCUT": 300, "EDIFF": 1e-7},
+        )
+        calculator = PotentialCalculator(vasp_qmmm_system, potential)
+        analytical = calculator.calculate().forces[0]
+        numerical = -numerical_gradient(calculator, frozenset({0}), dist=1e-3)[0]
+        assert analytical == pytest.approx(numerical, abs=1.0)
