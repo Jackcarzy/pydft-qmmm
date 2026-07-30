@@ -15,6 +15,14 @@
 - **Test files are named** `*_test.py`, not `test_*.py`.
 - **`EPS0 = 0.005526349358057108`** e/(V·Å). `KJMOL_PER_EV = 96.48533212331`.
 - **Sign convention:** VASP's potentials are electron-referenced. `V = −φ`. A positive charge *lowers* the electron potential energy. Getting this wrong flipped every nuclear force in M2.
+- **Two force conventions coexist, and both are correct.** M3's contraction
+  returns `F = qE = −q∇φ`. M2's plugin uses `F = +Z∇V_ext`
+  (`vasp_plugin.py:240`, `additions.forces += valence[:, None] * gradient`).
+  They are the same equation because `V_ext = −φ` — verified bit-identical
+  (`3.52020818` for the same configuration by both routes). **Do not "fix" line
+  240 to match M3's minus sign.** That `+` was already corrected once from a
+  wrong `−` and validated against Fig. 2b at 0.012 vs 5.820 kJ/mol/Å
+  uncorrected. Changing it re-introduces a resolved bug.
 - **The contraction must use the same σ and cutoff as the spreading.** Reading σ from `MM_CHARGES` rather than hardcoding is what makes Newton's third law hold term-by-term.
 - **`PLUGINS/MODE` stays unset** (defaults to `serial`, giving the full gathered grid on rank 1).
 - **Finite-difference tests must set `ISTART = 0`.** Restart reuse poisoned M2's gradient test and took three GPU jobs to diagnose.
@@ -53,10 +61,12 @@ Append to `tests/vasp_grid_potential_test.py`:
 class TestGaussianContraction:
     """The transpose of spread_gaussian: forces from a grid potential."""
 
-    def test_recovers_the_gradient_of_a_linear_field(self):
+    def test_recovers_the_force_in_a_linear_field(self):
         # For phi = c.r the convolution with a normalized Gaussian is
-        # exact, so contracting must return exactly q*c per charge --
-        # independent of sigma.
+        # exact, so contracting must return exactly the uniform-field
+        # force F = qE = -q*grad(phi) = -q*c per charge, independent of
+        # sigma.  The MINUS is the whole point: contracting returns a
+        # force, not an energy gradient.
         gradient = np.array([0.3, -0.7, 0.2])
         axes = [np.arange(n) * 10.0 / n for n in SHAPE]
         mesh = np.meshgrid(*axes, indexing="ij")
@@ -66,7 +76,7 @@ class TestGaussianContraction:
         got = grid_potential.contract_gaussian_gradient(
             field, positions, charges, SHAPE, CELL, sigma=0.4,
         )
-        assert got == pytest.approx(np.outer(charges, gradient), rel=1e-6)
+        assert got == pytest.approx(-np.outer(charges, gradient), rel=1e-6)
 
     def test_scales_linearly_with_charge(self):
         field = np.random.RandomState(0).normal(size=SHAPE)
@@ -100,6 +110,10 @@ class TestGaussianContraction:
 Run: `~/.conda/envs/vasp_qmmm/bin/python -m pytest tests/vasp_grid_potential_test.py::TestGaussianContraction -q`
 Expected: FAIL — `module 'grid_potential' has no attribute 'contract_gaussian_gradient'`
 
+Note `test_recovers_the_force_in_a_linear_field` expects `-q*c`, not `+q*c`.
+`contract_gaussian_gradient` returns a **force**; the name describes the kernel
+it contracts against, not the sign of what it gives back.
+
 - [ ] **Step 3: Implement**
 
 Append to `grid_potential.py`:
@@ -114,7 +128,11 @@ def contract_gaussian_gradient(
     potential by summing q*g_sigma over a 6 sigma box; this one
     contracts a potential against grad g_sigma over the same box:
 
-        F_j = -q_j * integral( field(r) * grad g_sigma(r - r_j) dr )
+        F_j = -q_j * integral( field(r) * grad_{r_j} g_sigma(r - r_j) dr )
+
+    Note grad_{r_j}, the derivative with respect to the CHARGE
+    position, not with respect to r.  The two differ by a sign and
+    reading it the wrong way inverts every MM force.
 
     Using the SAME kernel and box is what makes Newton's third law hold
     term by term rather than approximately: the force is differentiated
@@ -169,11 +187,15 @@ def contract_gaussian_gradient(
         cartesian = delta @ cell
         squared = np.einsum("...k,...k->...", cartesian, cartesian)
         gaussian = prefactor * np.exp(-0.5 * squared / sigma**2)
-        # grad_r g(r - r_j) = -(r - r_j)/sigma**2 * g, and the derivative
-        # with respect to r_j carries the opposite sign, so the two
-        # minus signs leave a plain +(r - r_j)/sigma**2 here.
+        # THREE sign flips, and dropping any one of them inverts every
+        # MM force:
+        #   grad_r g(r - r_j) = -(r - r_j)/sigma**2 * g
+        #   d/dr_j carries the opposite sign of grad_r, giving
+        #       dg/dr_j = +(r - r_j)/sigma**2 * g
+        #   F_j = -dE/dr_j puts the leading minus back.
+        # Net: F_j = -q_j/sigma**2 * integral( phi (r - r_j) g ).
         weight = gaussian * field[np.ix_(*select)]
-        forces[index] = charge * d_volume * np.einsum(
+        forces[index] = -charge * d_volume * np.einsum(
             "ijk,ijkc->c", weight, cartesian,
         ) / sigma**2
     return forces
@@ -270,7 +292,14 @@ Expected: FAIL — `NameError: name 'poisson_of' is not defined` until the helpe
 
 - [ ] **Step 3: No implementation needed**
 
-Task 1's kernel should already satisfy this. If `test_two_gaussians_push_each_other_apart` fails on the **sign**, the `cartesian` term in `contract_gaussian_gradient` has the wrong sign — flip it and re-run Task 1's tests, which do not pin the sign on their own because `test_recovers_the_gradient_of_a_linear_field` would also flip.
+Task 1's kernel should already satisfy this. If
+`test_two_gaussians_push_each_other_apart` fails on the **sign**, the leading
+minus in `contract_gaussian_gradient` was dropped: `F = -dE/dr_j` is a separate
+sign from the `dg/dr_j` flip, and applying only one of the two returns the
+energy gradient instead of the force. This test is the one that pins it — Task
+1's linear-field test flips with it, so it cannot catch the error alone. As a
+numeric anchor, two `+1e` Gaussians of `sigma=0.5` at 2.0 Å separation repel at
+roughly `+3.4 eV/A` along the axis.
 
 - [ ] **Step 4: Run the whole Tier 1 suite**
 
@@ -810,159 +839,179 @@ git commit -m "test(vasp): finite-difference check on an MM atom"
 
 ---
 
-### Task 8: PME-region forces
+### Task 8: Preserve the direct QM/MM/PME I–III force partition
 
-Subsystem III acts on the QM through helPME's reciprocal sum, so its reaction must return the same way. Do this only after Tasks 1-7 pass, so a failure here is isolated to the new channel.
+John *et al.*, J. Chem. Phys. **161**, 034103 (2024), Table I and
+Eq. (10), define direct QM/MM/PME with asymmetric I–III force levels:
+
+```text
+X = force on subsystem I from III = QM
+Y = force on subsystem III from I = MM
+```
+
+The PME potential passed to VASP supplies `X = QM`: subsystem III
+polarizes the QM density, and VASP differentiates that embedded QM
+energy with respect to subsystem-I coordinates.  OpenMM supplies
+`Y = MM` from its PME/Ewald calculation using the static force-field
+charges on subsystem I.
+
+This is deliberate.  Do **not** compute subsystem-III forces from
+VASP's charge density, do not introduce a `PME_FORCES` handoff, and do
+not require the I–III forces to obey Newton's third law.  A
+QM-density-derived `Y = QM` channel would be a distinct
+QM/MM/SC-PME method and, if added without removing OpenMM's `Y = MM`
+term, would double-count forces on subsystem III.
+
+Tasks 1–7 therefore complete the force return required for the direct
+method: subsystem-II embedded charges receive the QM back-reaction,
+while subsystem-III atoms retain their OpenMM forces.
 
 **Files:**
-- Modify: `pydft_qmmm/interfaces/vasp/pme_external.py`
-- Modify: `pydft_qmmm/interfaces/vasp/vasp_plugin.py`
-- Test: `tests/vasp_grid_potential_test.py`
+- Modify: `tests/vasp_embedding_test.py`
+- Test: `pydft_qmmm/hamiltonians/qmmm_hamiltonian.py` (existing force matrix)
 
 **Interfaces:**
-- Consumes: `read_pme_data`, `grid_coordinates` (existing in `pme_external`).
-- Produces: `pme_external.pme_forces_on_charges(path, charge_density, shape, cell) -> NDArray` of shape `(N_all, 3)` in eV/Å.
+- Consumes: `_LONG_EMBEDDING["electrostatic"]` and the composite
+  calculator's additive VASP/OpenMM force assembly.
+- Produces: no new runtime interface or force file.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Pin the force-matrix convention**
+
+Add a unit test which states the paper's `X = QM, Y = MM` convention
+directly:
 
 ```python
-class TestPMEForces:
-
-    def test_returns_one_row_per_charge(self, tmp_path):
-        from pydft_qmmm.interfaces.vasp import pme_external
-        rng = np.random.RandomState(0)
-        length = 20.0
-        cell = np.diag([length] * 3)
-        shape = (32, 32, 32)
-        positions = rng.uniform(0.0, length, (40, 3))
-        charges = rng.uniform(-1.0, 1.0, 40)
-        charges -= charges.mean()
-        path = str(tmp_path / "PME_DATA")
-        vasp_utils.write_pme_data(
-            path, positions, charges, [], 0.35, (32, 32, 32), 6, 0,
-        )
-        density = np.zeros(shape)
-        density[16, 16, 16] = 1.0
-        got = pme_external.pme_forces_on_charges(path, density, shape, cell)
-        assert got.shape == (40, 3)
-        assert np.isfinite(got).all()
-
-    def test_zero_density_gives_zero_force(self, tmp_path):
-        from pydft_qmmm.interfaces.vasp import pme_external
-        cell = np.diag([20.0] * 3)
-        shape = (32, 32, 32)
-        path = str(tmp_path / "PME_DATA")
-        vasp_utils.write_pme_data(
-            path, np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
-            [], 0.35, (32, 32, 32), 6, 0,
-        )
-        got = pme_external.pme_forces_on_charges(
-            path, np.zeros(shape), shape, cell,
-        )
-        assert got == pytest.approx(np.zeros((1, 3)), abs=1e-12)
+def test_direct_pme_uses_qm_force_on_i_and_mm_force_on_iii():
+    coupling = QMMMHamiltonian(
+        close_range="electrostatic",
+        long_range="electrostatic",
+        partition=None,
+    )
+    assert (
+        coupling.force_matrix[Subsystem.I][Subsystem.III]
+        == TheoryLevel.QM
+    )
+    assert (
+        coupling.force_matrix[Subsystem.III][Subsystem.I]
+        == TheoryLevel.MM
+    )
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Assert that VASP does not return subsystem-III rows**
 
-Run: `~/.conda/envs/vasp_qmmm/bin/python -m pytest tests/vasp_grid_potential_test.py::TestPMEForces -q`
-Expected: FAIL — no attribute `pme_forces_on_charges`.
-
-- [ ] **Step 3: Implement**
-
-Append to `pme_external.py`:
+Extend the interface force-return test from Task 5.  With both
+subsystems II and III populated, mock `_run()` and `_read_mm_forces()`,
+then assert that `VaspPotential.compute_forces()` fills subsystem I and
+II only:
 
 ```python
-def pme_forces_on_charges(path, charge_density, shape, cell, chunk=1 << 20):
-    """Force on every MM charge from the QM density, via PME.
+def test_vasp_leaves_subsystem_iii_for_openmm(vasp_embedded, monkeypatch):
+    qm = sorted(vasp_embedded.system.select("subsystem I"))
+    near = sorted(vasp_embedded.system.select("subsystem II"))
+    far = sorted(vasp_embedded.system.select("subsystem III"))
+    qm_rows = np.ones((len(qm), 3))
+    near_rows = np.full((len(near), 3), 2.0)
+    monkeypatch.setattr(vasp_embedded, "_run", lambda: (0.0, qm_rows))
+    monkeypatch.setattr(
+        vasp_embedded, "_read_mm_forces", lambda: near_rows,
+    )
+    forces = vasp_embedded.compute_forces()
+    assert forces[qm] == pytest.approx(qm_rows)
+    assert forces[near] == pytest.approx(near_rows)
+    assert forces[far] == pytest.approx(np.zeros((len(far), 3)))
+```
 
-    The mirror of build_pme_potential.  There the MM charges are the
-    source and VASP's grid points are the probes; here VASP's grid
-    carries the source density and the MM charges are the probes.
+**The existing fixture will not do.** `vasp_qmmm_system` assigns 3 atoms to
+subsystem I and 1149 to subsystem II, leaving **subsystem III empty** — so
+`forces[far] == approx(np.zeros((0, 3)))` passes over a zero-length array while
+testing nothing. That is precisely the trap recorded in the spec and in the
+`vasp_qmmm_system` docstring (job 11566828 passed with `min V_ext = -0.000000`).
 
-    Args:
-        path: The PME_DATA file written by the interface.
-        charge_density: VASP's grid density, normalized so that
-            sum(rho) = NELECT * N_grid.
-        shape: VASP's FFT grid dimensions.
-        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
-        chunk: Grid points per helPME call.
+Add this fixture to `tests/conftest.py` first:
 
-    Returns:
-        An Nx3 array of forces (eV/Angstrom), one row per charge in
-        PME_DATA.
+```python
+@pytest.fixture
+def vasp_three_subsystem_system(vasp_qmmm_system):
+    """vasp_qmmm_system with a genuinely populated subsystem III.
+
+    The stock fixture leaves subsystem III empty, which makes any
+    assertion of the form "VASP contributes nothing to III" vacuously
+    true.  Demote the outer half of subsystem II so the assertion has
+    atoms to range over.
     """
-    import helpme_py
-
-    positions, charges, _, alpha, gridnumber, spline_order, _ = (
-        read_pme_data(path)
-    )
-    pme = helpme_py.PMEInstanceD()
-    pme.setup(1, alpha, spline_order, *gridnumber, COULOMB_CONSTANT, 0)
-    pme.set_lattice_vectors(
-        *_lattice_constants(np.asarray(cell, dtype=np.float64)),
-        helpme_py.LatticeType.XAligned,
-    )
-    # The grid density in e/Angstrom**3 * cell volume, i.e. the charge
-    # carried by each grid point, with the electron sign.
-    density = -np.asarray(charge_density, dtype=np.float64).reshape(-1)
-    density = density / float(np.prod(shape))
-    coordinates = grid_coordinates(shape, cell)
-    result = np.zeros((len(charges), 4))
-    matrix = helpme_py.MatrixD(result)
-    probe_charges = helpme_py.MatrixD(charges.reshape(-1, 1))
-    probe_positions = helpme_py.MatrixD(positions)
-    for start in range(0, len(coordinates), chunk):
-        block = np.ascontiguousarray(coordinates[start:start + chunk])
-        block_charges = np.ascontiguousarray(
-            density[start:start + chunk].reshape(-1, 1),
-        )
-        pme.compute_P_rec(
-            0, helpme_py.MatrixD(block_charges), helpme_py.MatrixD(block),
-            probe_positions, 1, matrix,
-        )
-    # column 0 is the potential; columns 1-3 its gradient.  F = q * E,
-    # and E = -grad phi.
-    return -(result[:, 1:].T * charges).T / KJMOL_PER_EV
+    near = sorted(vasp_qmmm_system.select("subsystem II"))
+    for atom in near[len(near) // 2:]:
+        vasp_qmmm_system.subsystems[atom] = Subsystem.III
+    assert len(vasp_qmmm_system.select("subsystem III")) > 0
+    return vasp_qmmm_system
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+and build `vasp_embedded` from it in these two tests rather than from
+`vasp_qmmm_system`. The zero rows are the VASP calculator's contribution only;
+the composite calculator adds OpenMM's nonzero MM-level rows afterward.
 
-Run: `~/.conda/envs/vasp_qmmm/bin/python -m pytest tests/vasp_grid_potential_test.py::TestPMEForces -q`
-Expected: 2 passed.
+- [ ] **Step 3: Verify the OpenMM side remains active**
 
-- [ ] **Step 5: Add the PME rows to the plugin's force output**
-
-In `force_and_stress`, when `PME_FILE` exists, add the reciprocal contribution to the rows for subsystem III. The near-field rows already come from the contraction; PME supplies the rest.
+Add an integration-level test around the composite calculator which
+compares its subsystem-III rows with the OpenMM calculator's
+subsystem-III rows for the same coordinates.  The VASP contribution on
+III must be zero, so the two must agree:
 
 ```python
-        if os.path.isfile(PME_FILE):
-            try:
-                from .pme_external import pme_forces_on_charges
-            except ImportError:
-                from pme_external import pme_forces_on_charges
-            pme_rows = pme_forces_on_charges(
-                PME_FILE, constants.charge_density, shape, cell,
-            ) * KJMOL_PER_EV
-            with open(PME_FORCE_FILE, "w") as fh:
-                fh.write(f"{len(pme_rows)} {step}\n")
-                for fx, fy, fz in pme_rows:
-                    fh.write(f"{fx:.12e} {fy:.12e} {fz:.12e}\n")
+assert composite_results.forces[far] == pytest.approx(
+    openmm_results.forces[far],
+)
 ```
 
-Add `PME_FORCE_FILE = "PME_FORCES"` beside the other file names, and have the interface read it into the subsystem III rows the same way `_read_mm_forces` fills subsystem II.
+This test guards against accidentally zeroing `Y = MM` while removing
+the MM force on subsystem I needed to realize `X = QM`.
 
-- [ ] **Step 6: Extend the third-law test to all three subsystems**
+- [ ] **Step 4: Keep the third-law test scoped to I–II**
 
-Change `TestThirdLaw` to sum over `I + II + III` when a PME potential is attached, and keep the `I + II` form when it is not. With both channels present the full sum must cancel.
+Do not extend Task 6's strict cancellation test to subsystem III.
+For direct QM/MM/PME, `X = QM` and `Y = MM` arise from different
+energy representations and are not required to be equal and opposite.
+The I–II test remains valid because both directions are evaluated at
+the QM level.
+
+- [ ] **Step 5: Document SC-PME as deferred**
+
+Add to the Deferred section at the end of this plan:
+
+```markdown
+- **QM/MM/SC-PME (`X = QM, Y = QM`).** The empty row in John *et al.*, JCP
+  **161**, 034103 (2024), Table I. They rule it out because it "would require a
+  very dense FFT/PME grid for numerical solution of the Poisson equation
+  utilizing the QM electron density", but name the exemption that applies here:
+  it "is possible if core electrons are described by pseudopotentials, and only
+  valence electrons are treated explicitly", so "a much coarser (and more
+  standard) FFT grid can be utilized". VASP is PAW, valence-only, on a standard
+  FFT grid. Deferred, not impossible.
+```
+
+If it is implemented later, give it a separate explicit
+method name and force-matrix entry `(QM, QM)`.  That implementation
+must replace, rather than add to, OpenMM's I–III force on subsystem III
+and will require its own energy-gradient and momentum-conservation
+tests.
+
+- [ ] **Step 6: Run the focused tests**
+
+Run:
+
+```bash
+~/.conda/envs/vasp_qmmm/bin/python -m pytest \
+    tests/qmmm_hamiltonian_test.py tests/vasp_embedding_test.py -q
+```
+
+Expected: all non-VASP tests pass; hardware-backed VASP tests skip
+unless explicitly enabled.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add pydft_qmmm/interfaces/vasp/pme_external.py \
-        pydft_qmmm/interfaces/vasp/vasp_plugin.py \
-        pydft_qmmm/interfaces/vasp/vasp_interface.py \
-        tests/vasp_grid_potential_test.py tests/vasp_embedding_test.py
-git commit -m "feat(vasp): PME-region forces on subsystem III"
+git add tests/qmmm_hamiltonian_test.py tests/vasp_embedding_test.py
+git commit -m "test(qmmm): preserve direct PME X=QM, Y=MM force partition"
 ```
 
 ---
@@ -971,3 +1020,12 @@ git commit -m "feat(vasp): PME-region forces on subsystem III"
 
 - **Stress contributions from the MM charges.** The plugin can add to `additions.stress`, but nothing downstream consumes it.
 - **The ~16 kJ/mol/Å QM/MM gradient residual from Milestone 2.** Measured, unexplained, and out of scope here.
+- **QM/MM/SC-PME (`X = QM, Y = QM`).** The empty row in John *et al.*, JCP
+  **161**, 034103 (2024), Table I. They rule it out because it "would require a
+  very dense FFT/PME grid for numerical solution of the Poisson equation
+  utilizing the QM electron density", but name the exemption that applies here:
+  it "is possible if core electrons are described by pseudopotentials, and only
+  valence electrons are treated explicitly", so "a much coarser (and more
+  standard) FFT grid can be utilized". VASP is PAW, valence-only, on a standard
+  FFT grid. Deferred, not impossible — and it would have to **replace** OpenMM's
+  `Y = MM` term, not add to it.

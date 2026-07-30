@@ -54,13 +54,18 @@ Differentiating the **second** form with respect to `r_j` puts the derivative on
 the MM charge's own Gaussian, which is **local**:
 
 ```
-F_j = −q_j ∫ φ_QM(r)·∇g_σ(r − r_j) dr        ~21³ grid points per atom
+F_j = −q_j ∫ φ_QM(r)·∇_{r_j} g_σ(r − r_j) dr    ~21³ grid points per atom
 ```
 
 | approach | cost per ionic step |
 |---|---|
 | spectral evaluation at 2685 points | ~8×10¹⁰ ops → hours |
 | **local-box contraction** | ~2.5×10⁷ ops → seconds |
+
+The gradient is taken with respect to **`r_j`**, the charge position, not with
+respect to `r`. The two differ by a sign, and `F = −∂E/∂r_j` supplies a second
+one; applying only one of the two returns the energy gradient and inverts every
+MM force.
 
 This is the **transpose of `spread_gaussian`** — same kernel, same σ, same 6σ
 box, `∇g_σ` in place of `g_σ`. The same locality that made charge spreading
