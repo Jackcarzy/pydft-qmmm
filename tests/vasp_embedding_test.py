@@ -159,7 +159,7 @@ class TestSmoke:
         print("\n" + report)
 
     def test_zero_charges_reproduce_the_unembedded_energy(
-            self, vasp_qmmm_system, tmp_path, vasp_pp_library,
+            self, vasp_qmmm_system, vasp_workdir, vasp_pp_library,
     ):
         # The control: machinery fully active, physics inert.  Separates
         # "the plumbing is a no-op when it should be" from "the physics
@@ -167,12 +167,12 @@ class TestSmoke:
         vasp_qmmm_system.charges[:] = 0.0
         plain = vasp_interface_factory(
             vasp_qmmm_system,
-            directory=str(tmp_path / "plain"),
+            directory=str(vasp_workdir / "plain"),
             pp_path=vasp_pp_library,
         ).compute_energy()
         embedded = vasp_interface_factory(
             vasp_qmmm_system,
-            directory=str(tmp_path / "embed"),
+            directory=str(vasp_workdir / "embed"),
             pp_path=vasp_pp_library,
             embedding=True,
         ).compute_energy()
@@ -189,13 +189,13 @@ class TestGradients:
     """
 
     def test_embedded_forces_match_numerical_gradient(
-            self, vasp_qmmm_system, tmp_path, vasp_pp_library,
+            self, vasp_qmmm_system, vasp_workdir, vasp_pp_library,
     ):
         from pydft_qmmm.calculators import PotentialCalculator
         from pydft_qmmm.utils import numerical_gradient
         potential = vasp_interface_factory(
             vasp_qmmm_system,
-            directory=str(tmp_path / "vasp"),
+            directory=str(vasp_workdir / "vasp"),
             pp_path=vasp_pp_library,
             embedding=True,
             # ENCUT is reduced from the default 400 and EDIFF tightened:

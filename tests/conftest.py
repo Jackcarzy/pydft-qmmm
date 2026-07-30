@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 
 import pytest
 
@@ -103,6 +104,24 @@ def vasp_pp_library():
 
 
 @pytest.fixture
+def vasp_workdir(tmp_path, request):
+    """Where VASP-backed tests should put their run directories.
+
+    Defaults to pytest's tmp_path, which keeps the unit tests hermetic.
+    On a compute node tmp_path lives in node-local /tmp and evaporates
+    when the job ends, taking the OUTCAR with it -- so setting
+    PYDFT_QMMM_VASP_TESTDIR redirects runs somewhere durable and makes
+    failures diagnosable after the fact.
+    """
+    root = os.environ.get("PYDFT_QMMM_VASP_TESTDIR")
+    if not root:
+        return tmp_path
+    path = os.path.join(root, request.node.name)
+    os.makedirs(path, exist_ok=True)
+    return pathlib.Path(path)
+
+
+@pytest.fixture
 def vasp_qmmm_system(spce_system):
     """An SPC/E system with an explicit QM region.
 
@@ -122,12 +141,19 @@ def vasp_qmmm_system(spce_system):
 
 
 @pytest.fixture
-def vasp_embedded(vasp_qmmm_system, tmp_path):
+def vasp_embedded(vasp_qmmm_system, vasp_workdir):
     """A VASP potential with electrostatic embedding switched on."""
     from pydft_qmmm.interfaces.vasp.vasp_factory import vasp_interface_factory
     return vasp_interface_factory(
         vasp_qmmm_system,
-        directory=str(tmp_path / "vasp"),
+        directory=str(vasp_workdir / "vasp"),
         pp_path=VASP_PP_LIBRARY,
         embedding=True,
+        # The QM region is one water, but the VASP cell must match the
+        # MM box (29.9 A) so the embedded charges land in the right
+        # place -- it cannot be shrunk.  At the default ENCUT=400 that
+        # is a ~196**3 fine grid, which OOM-killed a 12 GB job.  These
+        # tests ask "does the plugin fire and is E consistent with F",
+        # not "is the energy converged", so a lighter cutoff is right.
+        incar={"ENCUT": 250},
     )

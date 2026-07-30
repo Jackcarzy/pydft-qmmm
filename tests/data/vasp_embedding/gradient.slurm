@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:H200:1
 #SBATCH -t 8:00:00
-#SBATCH --mem-per-gpu=12G
+#SBATCH --mem-per-gpu=64G
 #SBATCH -o %x.%j.out
 #SBATCH -e %x.%j.err
 
@@ -36,6 +36,12 @@ cd "$REPO"
 
 export PYDFT_QMMM_VASP_COMMAND="$REPO/tests/data/vasp_embedding/run_vasp.sh"
 export VASP_PP_PATH=/storage/project/r-jmcdaniel43-0/cshao48/install/vasp/potpaw_PBE.64
+
+# Keep run directories after the job ends.  pytest's tmp_path lives in
+# node-local /tmp, which evaporates with the allocation and takes the
+# OUTCAR with it -- that cost us the diagnosis on job 11566747.
+export PYDFT_QMMM_VASP_TESTDIR=/storage/project/r-jmcdaniel43-0/cshao48/install/pydft-vasp-qmmm/vasp_test_runs/${SLURM_JOB_ID}
+mkdir -p "$PYDFT_QMMM_VASP_TESTDIR"
 
 PYTEST=/storage/home/hcoda1/1/cshao48/.conda/envs/openmm/bin/python
 
