@@ -267,3 +267,45 @@ class TestGradients:
         print(f"  unembedded numerical : {numerical}")
         print(f"  unembedded residual  : {analytical - numerical}")
         assert analytical == pytest.approx(numerical, abs=1.0)
+
+
+@requires_vasp
+class TestFigure2b:
+    """The manuscript's Figure 2b, against real VASP.
+
+    A neutral hydrogen atom in a constant field.  VASP alone reports a
+    force of 1e * E_ext because it omits the core-field interaction;
+    Eq. 4 supplies exactly that, so the corrected force must be ~0.
+
+    This is the clean probe of the correction.  The QM/MM
+    finite-difference test measures the same physics through a
+    near-total cancellation (a ~950 kJ/mol/A nuclear term against a ~27
+    net force), where a 1.7% error looks like 50%.  Here the correction
+    IS the signal.
+    """
+
+    # Periodic result, NOT sigma/eps0: the potential must close on
+    # itself, giving (sigma/eps0) * (L-d)/L with d = 20, L = 30.
+    FIELD = (0.001 / 0.005526349358057108) * 10.0 / 30.0    # V/Angstrom
+    KJMOL_PER_EV = 96.48533212331
+
+    def test_corrected_force_on_neutral_atom_is_near_zero(
+            self, h_constant_field_system, vasp_workdir, vasp_pp_library,
+    ):
+        potential = vasp_interface_factory(
+            h_constant_field_system,
+            directory=str(vasp_workdir / "vasp"),
+            pp_path=vasp_pp_library,
+            embedding=True,
+            incar={"ENCUT": 400, "EDIFF": 1e-7, "ISMEAR": 0, "SIGMA": 0.05},
+        )
+        forces = potential.compute_forces()
+        uncorrected = 1.0 * self.FIELD * self.KJMOL_PER_EV   # Z_H = 1
+        print(f"\n  E_ext (periodic)   : {self.FIELD:.4f} V/A")
+        print(f"  1e*E_ext           : {uncorrected:.3f} kJ/mol/A")
+        print(f"  corrected force    : {forces[0]}")
+        # The whole claim of Figure 2b: what would have been a force of
+        # 1e*E_ext is cancelled to near zero by the core correction.
+        assert abs(forces[0, 2]) < 0.2 * abs(uncorrected)
+        assert forces[0, 0] == pytest.approx(0.0, abs=1.0)
+        assert forces[0, 1] == pytest.approx(0.0, abs=1.0)

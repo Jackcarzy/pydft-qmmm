@@ -168,3 +168,30 @@ def vasp_embedded(vasp_qmmm_system, vasp_workdir):
         # not "is the energy converged", so a lighter cutoff is right.
         incar={"ENCUT": 250},
     )
+
+
+@pytest.fixture
+def h_constant_field_system():
+    """The manuscript's Figure 2b system: H atom in a constant field.
+
+    One hydrogen at the centre of a 10 x 10 x 30 cell (subsystem I) and
+    two oppositely charged sheets at z = 20 and z = 0 (subsystem II).
+
+    The atom is charge neutral and barely polarizable, so the TOTAL
+    force must be ~0.  VASP alone reports 1e * E_ext, because it omits
+    the core-field interaction; Eq. 4 supplies exactly that.  Unlike a
+    QM/MM system, the correction here IS the entire signal.
+    """
+    system = System.load("tests/data/h_constant_field.pdb")
+    SURFACE_CHARGE = 0.001                      # e / Angstrom**2
+    sheet = [i for i, e in enumerate(system.elements) if str(e) == "Ne"]
+    per_sheet = len(sheet) // 2
+    per_site = SURFACE_CHARGE * 100.0 / per_sheet
+    charges = np.asarray(system.charges)
+    for n, atom in enumerate(sheet):
+        charges[atom] = per_site if n < per_sheet else -per_site
+    system.subsystems[0] = Subsystem.I
+    for atom in sheet:
+        system.subsystems[atom] = Subsystem.II
+    assert abs(charges.sum()) < 1e-9, "sheets must be net neutral"
+    return system
