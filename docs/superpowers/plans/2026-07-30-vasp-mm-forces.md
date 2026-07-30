@@ -950,23 +950,7 @@ and build `vasp_embedded` from it in these two tests rather than from
 `vasp_qmmm_system`. The zero rows are the VASP calculator's contribution only;
 the composite calculator adds OpenMM's nonzero MM-level rows afterward.
 
-- [ ] **Step 3: Verify the OpenMM side remains active**
-
-Add an integration-level test around the composite calculator which
-compares its subsystem-III rows with the OpenMM calculator's
-subsystem-III rows for the same coordinates.  The VASP contribution on
-III must be zero, so the two must agree:
-
-```python
-assert composite_results.forces[far] == pytest.approx(
-    openmm_results.forces[far],
-)
-```
-
-This test guards against accidentally zeroing `Y = MM` while removing
-the MM force on subsystem I needed to realize `X = QM`.
-
-- [ ] **Step 4: Keep the third-law test scoped to I–II**
+- [ ] **Step 3: Keep the third-law test scoped to I–II**
 
 Do not extend Task 6's strict cancellation test to subsystem III.
 For direct QM/MM/PME, `X = QM` and `Y = MM` arise from different
@@ -974,7 +958,7 @@ energy representations and are not required to be equal and opposite.
 The I–II test remains valid because both directions are evaluated at
 the QM level.
 
-- [ ] **Step 5: Document SC-PME as deferred**
+- [ ] **Step 4: Document SC-PME as deferred**
 
 Add to the Deferred section at the end of this plan:
 
@@ -995,7 +979,7 @@ must replace, rather than add to, OpenMM's I–III force on subsystem III
 and will require its own energy-gradient and momentum-conservation
 tests.
 
-- [ ] **Step 6: Run the focused tests**
+- [ ] **Step 5: Run the focused tests**
 
 Run:
 
@@ -1007,7 +991,7 @@ Run:
 Expected: all non-VASP tests pass; hardware-backed VASP tests skip
 unless explicitly enabled.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add tests/qmmm_hamiltonian_test.py tests/vasp_embedding_test.py
