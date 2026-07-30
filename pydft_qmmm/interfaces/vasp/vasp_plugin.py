@@ -141,3 +141,59 @@ def build_external_potential(positions, charges, shape, cell, sigma):
     """
     rho = spread_gaussian(positions, charges, shape, cell, sigma)
     return -poisson_fft(rho, cell)
+
+
+def interpolate_at(field, cell, points):
+    """Trilinearly interpolate a periodic grid field at points.
+
+    Args:
+        field: A scalar field on the grid.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        points: An Nx3 array of Cartesian positions (Angstrom).
+
+    Returns:
+        An N array of interpolated values.
+    """
+    shape = np.array(field.shape)
+    fractional = (np.atleast_2d(points) @ np.linalg.inv(cell)) % 1.0
+    scaled = fractional * shape
+    lower = np.floor(scaled).astype(int)
+    weight = scaled - lower
+    result = np.zeros(len(scaled))
+    for offset in np.ndindex(2, 2, 2):
+        offset = np.array(offset)
+        index = (lower + offset) % shape
+        corner = np.where(offset == 1, weight, 1.0 - weight)
+        result += (
+            field[index[:, 0], index[:, 1], index[:, 2]]
+            * corner.prod(axis=1)
+        )
+    return result
+
+
+def gradient_at(field, cell, points):
+    """Return the gradient of a periodic grid field at points.
+
+    The derivative is taken in reciprocal space, which is exact for a
+    band-limited field, and the three components are then interpolated,
+    so the gradient is consistent with interpolate_at.
+
+    Args:
+        field: A scalar field on the grid.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        points: An Nx3 array of Cartesian positions (Angstrom).
+
+    Returns:
+        An Nx3 array of gradients (field units per Angstrom).
+    """
+    points = np.atleast_2d(points)
+    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
+    axes = [np.fft.fftfreq(n) * n for n in field.shape]
+    miller = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
+    g_vectors = miller @ reciprocal
+    field_g = np.fft.fftn(field)
+    gradient = np.zeros((len(points), 3))
+    for axis in range(3):
+        component = np.fft.ifftn(1j * g_vectors[..., axis] * field_g).real
+        gradient[:, axis] = interpolate_at(component, cell, points)
+    return gradient
