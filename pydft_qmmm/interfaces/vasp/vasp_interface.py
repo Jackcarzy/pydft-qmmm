@@ -83,6 +83,35 @@ class VaspInterface(QMInterface):
         init=False,
     )
 
+    def configure_electrostatic_embedding(self, enabled: bool) -> None:
+        """Align the VASP plugin with the QM/MM coupling Hamiltonian.
+
+        Electrostatic coupling requires VASP's external-potential plugin.
+        Mechanical or absent coupling must not run that plugin, because
+        OpenMM retains those electrostatic interactions and they would be
+        counted twice.
+
+        Args:
+            enabled: Whether any QM/MM electrostatics are assigned to
+                the QM level of theory.
+
+        Raises:
+            ValueError: If embedding was manually enabled for a coupling
+                scheme which leaves electrostatics at the MM level.
+        """
+        if enabled:
+            # SoftwareInterface is frozen to keep its external-engine
+            # handles stable.  This flag is configuration state finalized
+            # while the composite calculator is being built.
+            object.__setattr__(self, "embedding", True)
+        elif self.embedding:
+            raise ValueError(
+                "VASP embedding=True conflicts with this QMMMHamiltonian: "
+                "no QM/MM electrostatic interaction is assigned to the QM "
+                "level. Disable embedding or select electrostatic coupling "
+                "to avoid double-counting electrostatics.",
+            )
+
     def add_electronic_potential(
             self, potential: ElectronicPotential,
     ) -> None:

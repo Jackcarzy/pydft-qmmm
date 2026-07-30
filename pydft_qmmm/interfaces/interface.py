@@ -157,6 +157,20 @@ class QMInterface(SoftwareInterface):
     """
     theory_level: TheoryLevel = field(default=TheoryLevel.QM, init=False)
 
+    def configure_electrostatic_embedding(self, enabled: bool) -> None:
+        """Configure coupling-driven electrostatic embedding.
+
+        Most QM interfaces derive their embedding behavior directly from
+        subsystem membership and therefore need no explicit configuration.
+        Interfaces with an optional embedding backend can override this
+        hook to enable it or reject an inconsistent manual configuration.
+
+        Args:
+            enabled: Whether the QM/MM Hamiltonian assigns any
+                electrostatic interaction to the QM level of theory.
+        """
+        pass
+
     @abstractmethod
     def add_electronic_potential(self, potential: ElectronicPotential) -> None:
         """Add an electronic potential to apply before calculations.

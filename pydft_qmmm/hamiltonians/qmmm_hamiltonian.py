@@ -20,6 +20,7 @@ from warnings import warn
 import numpy as np
 
 from .hamiltonian import CouplingHamiltonian
+from pydft_qmmm.calculators import PartitionPlugin
 from pydft_qmmm.calculators import PotentialCalculator
 from pydft_qmmm.utils import Subsystem
 from pydft_qmmm.utils import TheoryLevel
@@ -31,7 +32,6 @@ from pydft_qmmm.utils import compute_lattice_constants
 if TYPE_CHECKING:
     from pydft_qmmm import System
     from pydft_qmmm.calculators import CompositeCalculator
-    from pydft_qmmm.calculators import PartitionPlugin
 
 
 _DEFAULT_FORCE_MATRIX = {
@@ -79,6 +79,8 @@ _SUPPORTED_EMBEDDING = [
     ("electrostatic", "electrostatic"),
 ]
 
+_DEFAULT_PARTITION = object()
+
 
 class QMMMHamiltonian(CouplingHamiltonian):
     r"""A Hamiltonian defining inter-subsystem coupling in QM/MM.
@@ -107,7 +109,7 @@ class QMMMHamiltonian(CouplingHamiltonian):
             self,
             close_range: str = "electrostatic",
             long_range: str = "cutoff",
-            partition: PartitionPlugin | None = CentroidPartition("all", 14.),
+            partition: PartitionPlugin | None | object = _DEFAULT_PARTITION,
             cutoff: int | float | None = None,
             pme_alpha: int | float | None = None,
             pme_gridnumber: int | tuple[int, int, int] | None = None,
@@ -115,8 +117,25 @@ class QMMMHamiltonian(CouplingHamiltonian):
     ) -> None:
         if (close_range, long_range) not in _SUPPORTED_EMBEDDING:
             raise TypeError  # Todo: Make this informative.
-        self.force_matrix = _DEFAULT_FORCE_MATRIX.copy()
-        self.partition = partition
+        # Every Hamiltonian must own its inner mappings.  A shallow copy
+        # would leave them shared with the module template and with other
+        # instances, so configuring one Hamiltonian would mutate all of
+        # them.
+        self.force_matrix = {
+            subsystem: interactions.copy()
+            for subsystem, interactions in _DEFAULT_FORCE_MATRIX.items()
+        }
+        # A constructed object cannot be used as a function default:
+        # QMMMHamiltonian.modify_calculator mutates its cutoff and plugin
+        # registration adds calculator state.  Build a fresh default for
+        # each Hamiltonian while preserving partition=None as the public
+        # way to disable dynamic partitioning.
+        if partition is _DEFAULT_PARTITION:
+            self.partition: PartitionPlugin | None = CentroidPartition(
+                "all", 14.,
+            )
+        else:
+            self.partition = partition
         self.cutoff = cutoff
         self.pme_alpha = pme_alpha
         self.pme_gridnumber = pme_gridnumber
@@ -146,12 +165,22 @@ class QMMMHamiltonian(CouplingHamiltonian):
             if self.cutoff is not None:
                 self.partition.cutoff = self.cutoff
             calculator.register_plugin(self.partition)
+        qm_interface = None
         for calc in calculator.calculators:
             if isinstance(calc, PotentialCalculator):
                 if isinstance(calc.potential, MMInterface):
                     mm_interface = calc.potential
                 if isinstance(calc.potential, QMInterface):
                     qm_interface = calc.potential
+        qm_electrostatics = any(
+            self.force_matrix[Subsystem.I][subsystem] == TheoryLevel.QM
+            for subsystem in (Subsystem.II, Subsystem.III)
+        )
+        # Unlike mm_interface, this runs for every embedding scheme, so a
+        # calculator without a QM interface would otherwise raise
+        # UnboundLocalError rather than anything a reader can act on.
+        if qm_interface is not None:
+            qm_interface.configure_electrostatic_embedding(qm_electrostatics)
         if (
             self.force_matrix[Subsystem.I][Subsystem.III]
             == TheoryLevel.QM

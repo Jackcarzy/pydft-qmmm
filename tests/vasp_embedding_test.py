@@ -6,10 +6,14 @@ gradient tests do, and are skipped unless PYDFT_QMMM_VASP_COMMAND is set.
 from __future__ import annotations
 
 import os
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
+from pydft_qmmm import QMMMHamiltonian
+from pydft_qmmm.calculators import PotentialCalculator
+from pydft_qmmm.interfaces import MMInterface
 from pydft_qmmm.interfaces.vasp import vasp_plugin
 from pydft_qmmm.interfaces.vasp.vasp_factory import vasp_interface_factory
 
@@ -136,6 +140,52 @@ class TestFactory:
                 pp_path=vasp_pp_library,
                 embedding=True,
                 embedding_sigma=bad,
+            )
+
+
+class TestCouplingConfiguration:
+
+    @staticmethod
+    def _configure(coupling, potential, system, monkeypatch):
+        mm_interface = Mock(spec=MMInterface)
+        calculator = Mock()
+        calculator.calculators = [
+            PotentialCalculator(system, potential),
+            PotentialCalculator(system, mm_interface),
+        ]
+        monkeypatch.setattr(coupling, "apply_exclusions", Mock())
+        coupling.modify_calculator(calculator, system)
+
+    def test_electrostatic_coupling_enables_vasp_embedding(
+            self, vasp_qmmm_system, tmp_path, vasp_pp_library, monkeypatch,
+    ):
+        potential = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(tmp_path / "vasp"),
+            pp_path=vasp_pp_library,
+        )
+        assert potential.embedding is False
+        coupling = QMMMHamiltonian(
+            "electrostatic", "cutoff", partition=None,
+        )
+        self._configure(coupling, potential, vasp_qmmm_system, monkeypatch)
+        assert potential.embedding is True
+
+    def test_manual_embedding_with_mechanical_coupling_is_rejected(
+            self, vasp_qmmm_system, tmp_path, vasp_pp_library, monkeypatch,
+    ):
+        potential = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(tmp_path / "vasp"),
+            pp_path=vasp_pp_library,
+            embedding=True,
+        )
+        coupling = QMMMHamiltonian(
+            "mechanical", "mechanical", partition=None,
+        )
+        with pytest.raises(ValueError, match="double-counting"):
+            self._configure(
+                coupling, potential, vasp_qmmm_system, monkeypatch,
             )
 
 
