@@ -104,3 +104,66 @@ class TestSpreadGaussian:
         )
         assert rho.shape == SHAPE
         assert np.all(rho == 0.0)
+
+
+# e / (4 * pi * eps0) in eV*Angstrom/e -- the Coulomb constant.
+COULOMB = 14.399645
+
+
+class TestPoisson:
+
+    def test_satisfies_poissons_equation(self):
+        # Apply the Laplacian back to phi in reciprocal space and
+        # recover rho.  Exact up to the G=0 term, so cell-size
+        # independent -- the strongest available check.
+        rho = vasp_plugin.spread_gaussian(
+            np.array([[5.0, 5.0, 5.0], [7.0, 5.0, 5.0]]),
+            np.array([1.0, -1.0]), SHAPE, CELL, sigma=0.5,
+        )
+        phi = vasp_plugin.poisson_fft(rho, CELL)
+        phi_g = np.fft.fftn(phi)
+        g_squared = vasp_plugin._g_squared(SHAPE, CELL)
+        recovered = np.fft.ifftn(phi_g * g_squared * vasp_plugin.EPS0).real
+        assert recovered == pytest.approx(rho - rho.mean(), abs=1e-9)
+
+    def test_positive_charge_lowers_electron_potential_energy(self):
+        # The single likeliest bug, asserted alone.  Electrons are
+        # attracted to a positive charge, so V_ext must be negative.
+        v_ext = vasp_plugin.build_external_potential(
+            np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            SHAPE, CELL, sigma=0.4,
+        )
+        assert v_ext[24, 24, 24] < 0.0
+
+    def test_electron_potential_is_the_negated_electrostatic_potential(self):
+        # Units are asserted on phi (volts) separately from the sign, so
+        # a unit error cannot cancel against a sign error.
+        positions = np.array([[5.0, 5.0, 5.0]])
+        charges = np.array([1.0])
+        rho = vasp_plugin.spread_gaussian(
+            positions, charges, SHAPE, CELL, sigma=0.4,
+        )
+        phi = vasp_plugin.poisson_fft(rho, CELL)
+        v_ext = vasp_plugin.build_external_potential(
+            positions, charges, SHAPE, CELL, sigma=0.4,
+        )
+        assert phi[24, 24, 24] > 0.0
+        assert v_ext == pytest.approx(-phi, abs=1e-12)
+
+    def test_neutral_system_is_insensitive_to_the_g0_convention(self):
+        rho = vasp_plugin.spread_gaussian(
+            np.array([[4.0, 5.0, 5.0], [6.0, 5.0, 5.0]]),
+            np.array([1.0, -1.0]), SHAPE, CELL, sigma=0.4,
+        )
+        phi = vasp_plugin.poisson_fft(rho, CELL)
+        assert phi.mean() == pytest.approx(0.0, abs=1e-10)
+
+    def test_charged_system_has_zero_mean_potential(self):
+        # The G=0 choice fixes the average potential at zero, which is
+        # the uniform neutralizing background convention.
+        rho = vasp_plugin.spread_gaussian(
+            np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            SHAPE, CELL, sigma=0.4,
+        )
+        phi = vasp_plugin.poisson_fft(rho, CELL)
+        assert phi.mean() == pytest.approx(0.0, abs=1e-10)

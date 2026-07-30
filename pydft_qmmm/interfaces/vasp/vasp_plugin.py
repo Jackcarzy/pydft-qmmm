@@ -90,3 +90,54 @@ def spread_gaussian(positions, charges, shape, cell, sigma):
         squared = np.einsum("...k,...k->...", cartesian, cartesian)
         rho += charge * prefactor * np.exp(-0.5 * squared / sigma**2)
     return rho
+
+
+def _g_squared(shape, cell):
+    """Return |G|**2 on the reciprocal grid (Angstrom**-2)."""
+    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
+    axes = [np.fft.fftfreq(n) * n for n in shape]
+    miller = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
+    g_vectors = miller @ reciprocal
+    return np.einsum("...k,...k->...", g_vectors, g_vectors)
+
+
+def poisson_fft(rho, cell):
+    """Solve the periodic Poisson equation by FFT.
+
+    Solves del**2 phi = -rho / eps0.  In reciprocal space this is
+    phi_G = rho_G / (eps0 * |G|**2).  The G=0 term diverges for a
+    net-charged cell and is set to zero, which fixes the average
+    potential at zero -- equivalent to a uniform neutralizing
+    background, the same convention VASP uses for charged cells.
+
+    Args:
+        rho: The charge density on the grid (e/Angstrom**3).
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+
+    Returns:
+        The electrostatic potential on the grid (volts).
+    """
+    g_squared = _g_squared(rho.shape, cell)
+    g_squared[0, 0, 0] = 1.0
+    phi_g = np.fft.fftn(rho) / (EPS0 * g_squared)
+    phi_g[0, 0, 0] = 0.0
+    return np.fft.ifftn(phi_g).real
+
+
+def build_external_potential(positions, charges, shape, cell, sigma):
+    """Build V_ext on the grid from MM point charges.
+
+    Args:
+        positions: An Nx3 array of positions (Angstrom).
+        charges: An N array of charges (e).
+        shape: The grid dimensions.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        sigma: The Gaussian width (Angstrom).
+
+    Returns:
+        The external potential as electron potential ENERGY (eV), which
+        is the negative of the electrostatic potential.  This is the
+        quantity VASP's total_potential expects.
+    """
+    rho = spread_gaussian(positions, charges, shape, cell, sigma)
+    return -poisson_fft(rho, cell)
