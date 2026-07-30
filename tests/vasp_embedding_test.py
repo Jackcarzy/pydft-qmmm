@@ -309,3 +309,43 @@ class TestFigure2b:
         assert abs(forces[0, 2]) < 0.2 * abs(uncorrected)
         assert forces[0, 0] == pytest.approx(0.0, abs=1.0)
         assert forces[0, 1] == pytest.approx(0.0, abs=1.0)
+
+
+@requires_vasp
+class TestPME:
+    """The long-range (PME) embedding path against real VASP.
+
+    Unlike the cutoff scheme, the potential is built by helPME inside
+    VASP's interpreter, evaluated on VASP's own FFT grid.  This checks
+    that the path runs end to end and produces a non-trivial potential;
+    it is NOT yet a physics validation of the PME result itself.
+    """
+
+    def test_pme_path_runs_and_builds_a_potential(
+            self, vasp_pme_system, vasp_workdir, vasp_pp_library,
+    ):
+        from pydft_qmmm.potentials.pme_potential import (
+            PMEElectronicPotential,
+        )
+        potential = vasp_interface_factory(
+            vasp_pme_system,
+            directory=str(vasp_workdir / "vasp"),
+            pp_path=vasp_pp_library,
+            embedding=True,
+            incar={"ENCUT": 250, "EDIFF": 1e-6},
+        )
+        pme = PMEElectronicPotential(vasp_pme_system, 5.0, (30, 30, 30), 6)
+        potential.add_electronic_potential(pme)
+        energy = potential.compute_energy()
+        sentinel = os.path.join(potential.directory, vasp_plugin.SENTINEL)
+        assert os.path.isfile(sentinel), "plugin never fired"
+        report = open(sentinel).read()
+        print("\n" + report)
+        assert "(PME)" in report, "took the cutoff path, not PME"
+        minimum = float(
+            [ln for ln in report.splitlines() if "min V_ext" in ln][0]
+            .split("=")[1],
+        )
+        assert minimum < -1e-3, f"V_ext is essentially zero ({minimum})"
+        assert np.isfinite(energy)
+        print(f"  embedded energy: {energy:.6f} kJ/mol")

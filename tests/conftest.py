@@ -195,3 +195,23 @@ def h_constant_field_system():
         system.subsystems[atom] = Subsystem.II
     assert abs(charges.sum()) < 1e-9, "sheets must be net neutral"
     return system
+
+
+@pytest.fixture
+def vasp_pme_system(vasp_qmmm_system):
+    """QM/MM partition with a real subsystem III, for the PME path.
+
+    vasp_qmmm_system leaves every atom in I or II, so "not subsystem
+    III" covers the whole system and the PME reciprocal sum is almost
+    entirely cancelled by its own real-space adjustment.  Assigning the
+    remainder to III gives PME something to do: I is the QM region, II
+    is handled by the real-space cutoff, and III is what PME sums.
+    """
+    assigned = set(vasp_qmmm_system.select("subsystem I")) | set(
+        vasp_qmmm_system.select("subsystem II"),
+    )
+    for atom in range(len(vasp_qmmm_system.elements)):
+        if atom not in assigned:
+            vasp_qmmm_system.subsystems[atom] = Subsystem.III
+    assert len(vasp_qmmm_system.select("subsystem III")) > 0
+    return vasp_qmmm_system
