@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 
+import numpy as np
 import pytest
 
 from pydft_qmmm import MMHamiltonian
@@ -137,6 +138,16 @@ def vasp_qmmm_system(spce_system):
     # One water molecule as the QM subsystem.
     for atom in range(3):
         spce_system.subsystems[atom] = Subsystem.I
+    # System.load() leaves every charge at zero -- charges are normally
+    # assigned when an MM Hamiltonian builds its calculator.  Without
+    # this the embedding tests build an IDENTICALLY ZERO V_ext and pass
+    # while testing no physics whatsoever, which is exactly how job
+    # 11566828 reported "min V_ext eV = -0.000000".  Values are the SPC/E
+    # charges from tests/data/spce_no_lj.xml.
+    charges = np.asarray(spce_system.charges)
+    for atom, element in enumerate(spce_system.elements):
+        charges[atom] = -0.8476 if str(element) == "O" else 0.4238
+    assert np.count_nonzero(charges) == len(charges), "charges not applied"
     return spce_system
 
 

@@ -55,6 +55,10 @@ class TestInterfaceWiring:
         positions, charges, _, _ = vasp_plugin.read_mm_charges(path)
         indices = sorted(vasp_embedded.system.select("subsystem II"))
         assert len(charges) == len(indices)
+        # A system whose charges are all zero builds an identically zero
+        # V_ext, so every embedding test would pass while testing
+        # nothing.  Job 11566828 did exactly that.
+        assert np.count_nonzero(charges) > 0, "MM charges are all zero"
         assert positions == pytest.approx(
             np.asarray(vasp_embedded.system.positions)[indices], abs=1e-9,
         )
@@ -157,6 +161,17 @@ class TestSmoke:
         assert "mm_charges" in report
         assert np.isfinite(energy)
         print("\n" + report)
+        # The plugin firing is not enough: it must build a potential
+        # that is actually non-zero.  Parsed from the sentinel because
+        # the array itself lives in the VASP process.
+        minimum = float(
+            [ln for ln in report.splitlines() if "min V_ext" in ln][0]
+            .split("=")[1],
+        )
+        assert minimum < -1e-3, (
+            f"V_ext minimum is {minimum} eV -- the plugin ran but built "
+            "an essentially zero potential, so nothing was embedded"
+        )
 
     def test_zero_charges_reproduce_the_unembedded_energy(
             self, vasp_qmmm_system, vasp_workdir, vasp_pp_library,
@@ -164,6 +179,9 @@ class TestSmoke:
         # The control: machinery fully active, physics inert.  Separates
         # "the plumbing is a no-op when it should be" from "the physics
         # is right".
+        assert np.count_nonzero(vasp_qmmm_system.charges) > 0, (
+            "control is vacuous if the charges were already zero"
+        )
         vasp_qmmm_system.charges[:] = 0.0
         plain = vasp_interface_factory(
             vasp_qmmm_system,
