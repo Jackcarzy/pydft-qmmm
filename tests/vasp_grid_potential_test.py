@@ -576,3 +576,95 @@ class TestElectronInteractionEnergy:
             np.full(SHAPE, 8.0), v_ext,
         )
         assert got == pytest.approx(0.0, abs=1e-9)
+
+
+class TestInterpolantGradient:
+    """The gradient that must match interpolate_at exactly."""
+
+    def test_matches_finite_differences_to_machine_precision(self):
+        v_ext = vasp_plugin.build_external_potential(
+            np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            SHAPE, CELL, sigma=0.8,
+        )
+        point = np.array([[6.5, 5.3, 4.7]])
+        analytic = vasp_plugin.interpolant_gradient_at(v_ext, CELL, point)[0]
+        # A step well inside one grid cell, where the trilinear
+        # interpolant is exactly linear, so the difference quotient is
+        # the analytic slope.
+        step = (10.0 / SHAPE[0]) * 0.2
+        numerical = np.zeros(3)
+        for axis in range(3):
+            shift = np.zeros((1, 3))
+            shift[0, axis] = step
+            plus = vasp_plugin.interpolate_at(v_ext, CELL, point + shift)[0]
+            minus = vasp_plugin.interpolate_at(v_ext, CELL, point - shift)[0]
+            numerical[axis] = (plus - minus) / (2 * step)
+        assert analytic == pytest.approx(numerical, rel=1e-9)
+
+    def test_differs_from_the_spectral_gradient(self):
+        # Documents WHY both exist: they are genuinely different, and
+        # using the spectral one for the force while the energy uses
+        # interpolate_at cost a reproducible 14 kJ/mol/A.
+        v_ext = vasp_plugin.build_external_potential(
+            np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            SHAPE, CELL, sigma=0.8,
+        )
+        point = np.array([[6.5, 5.3, 4.7]])
+        spectral = vasp_plugin.gradient_at(v_ext, CELL, point)[0]
+        interpolant = vasp_plugin.interpolant_gradient_at(v_ext, CELL, point)[0]
+        assert not np.allclose(spectral, interpolant, rtol=1e-6)
+
+    def test_energy_and_force_corrections_converge_quadratically(
+            self, tmp_path, monkeypatch,
+    ):
+        # force_and_stress now takes the value and the gradient from one
+        # Fourier series, so the force IS the analytic derivative of the
+        # energy.  A central difference of a smooth function carries
+        # O(h**2) truncation error, so the right assertion is that the
+        # error falls ~4x when the step halves -- not that it reaches
+        # machine precision.
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.8,
+        )
+
+        def probe(x):
+            vasp_plugin.reset_cache()
+            constants = _constants(
+                SHAPE, CELL, positions=np.array([[x, 5.3, 4.7]]),
+            )
+            additions = _additions(SHAPE)
+            vasp_plugin.force_and_stress(constants, additions)
+            return additions.total_energy, additions.forces[0, 0]
+
+        _, force_x = probe(6.5)
+        errors = []
+        for step in (0.02, 0.01):
+            plus, _ = probe(6.5 + step)
+            minus, _ = probe(6.5 - step)
+            errors.append(abs(force_x + (plus - minus) / (2 * step)))
+        assert errors[1] < errors[0] / 3.0
+        assert errors[1] < 1e-3 * abs(force_x)
+
+    def test_transverse_force_vanishes_by_symmetry(
+            self, tmp_path, monkeypatch,
+    ):
+        # A charge at (5,5,5) and an ion at (7,5,5) share y and z, so
+        # those force components must vanish.  The trilinear-interpolant
+        # gradient gets this wrong by 2.0 kJ/mol/A because at a grid node
+        # its slope is one-sided; the Fourier series is symmetric.
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        additions = _additions(SHAPE)
+        vasp_plugin.force_and_stress(
+            _constants(SHAPE, CELL, positions=np.array([[7.0, 5.0, 5.0]])),
+            additions,
+        )
+        assert additions.forces[0, 0] > 0.0
+        assert additions.forces[0, 1] == pytest.approx(0.0, abs=1e-9)
+        assert additions.forces[0, 2] == pytest.approx(0.0, abs=1e-9)

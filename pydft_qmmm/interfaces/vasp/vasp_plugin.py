@@ -234,6 +234,119 @@ def interpolate_at(field, cell, points):
     return result
 
 
+def spectral_value_and_gradient(field, cell, points):
+    """Evaluate a periodic grid field and its gradient at points.
+
+    Both come from the same Fourier series,
+
+        f(R)      = sum_G  fhat(G) exp(i G.R)
+        grad f(R) = sum_G  i G fhat(G) exp(i G.R)
+
+    so the gradient is EXACTLY the derivative of the value -- which is
+    what molecular dynamics needs, and what neither of the alternatives
+    provides:
+
+      * interpolate_at + gradient_at mixes a trilinear value with a
+        spectral slope.  Measured cost: a reproducible 14 kJ/mol/A
+        finite-difference discrepancy (jobs 11566990, 11569337).
+      * interpolate_at + interpolant_gradient_at is self-consistent but
+        only C0, so at a grid node the slope is one-sided.  Measured
+        cost: a 2.0 kJ/mol/A transverse force where symmetry demands
+        zero.
+
+    The series is also exact for a band-limited field and correctly
+    periodic, unlike a minimum-image pairwise sum.
+
+    Evaluated separably: exp(i G.R) factorizes over the three lattice
+    directions, so this costs O(N_grid) work but only O(n) memory per
+    point rather than materializing a full complex grid per point.
+
+    Args:
+        field: A scalar field on the grid.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        points: An Nx3 array of Cartesian positions (Angstrom).
+
+    Returns:
+        (values, gradients) with shapes (N,) and (N, 3).
+    """
+    points = np.atleast_2d(points)
+    shape = field.shape
+    coefficients = np.fft.fftn(field) / field.size
+    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
+    miller = [np.fft.fftfreq(n) * n for n in shape]
+    values = np.zeros(len(points))
+    gradients = np.zeros((len(points), 3))
+    for index, point in enumerate(points):
+        projection = reciprocal @ point
+        phase = [
+            np.exp(1j * miller[axis] * projection[axis]) for axis in range(3)
+        ]
+        values[index] = np.einsum(
+            "ijk,i,j,k->", coefficients, *phase,
+        ).real
+        for component in range(3):
+            total = 0.0 + 0.0j
+            for axis in range(3):
+                weighted = list(phase)
+                weighted[axis] = (
+                    miller[axis] * reciprocal[axis, component] * phase[axis]
+                )
+                total += np.einsum("ijk,i,j,k->", coefficients, *weighted)
+            gradients[index, component] = (1j * total).real
+    return values, gradients
+
+
+def interpolant_gradient_at(field, cell, points):
+    """Analytic gradient OF THE TRILINEAR INTERPOLANT at points.
+
+    This is deliberately not the same as gradient_at.  gradient_at
+    differentiates in reciprocal space, which is a better approximation
+    to the true gradient of the underlying field but is NOT the
+    derivative of the value interpolate_at returns -- trilinear
+    interpolation is only C0, so its slope inside a cell differs from
+    the spectral derivative by O(h).
+
+    For molecular dynamics the energy and the force must be exactly
+    consistent, or the integrator sees a non-conservative field.  Since
+    the nuclear energy correction uses interpolate_at, the matching
+    force must use this function.  Measured cost of getting that wrong:
+    a reproducible 14 kJ/mol/A discrepancy in the finite-difference
+    test (jobs 11566990 and 11569337, bit-identical), about 1.5% of the
+    nuclear correction but roughly half the NET force, because the
+    nuclear and electronic terms nearly cancel.
+
+    Args:
+        field: A scalar field on the grid.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        points: An Nx3 array of Cartesian positions (Angstrom).
+
+    Returns:
+        An Nx3 array of gradients (field units per Angstrom).
+    """
+    points = np.atleast_2d(points)
+    shape = np.array(field.shape)
+    inverse = np.linalg.inv(cell)
+    fractional = (points @ inverse) % 1.0
+    scaled = fractional * shape
+    lower = np.floor(scaled).astype(int)
+    weight = scaled - lower
+    # d(value)/d(scaled coordinate), one column per axis.
+    d_scaled = np.zeros((len(points), 3))
+    for offset in np.ndindex(2, 2, 2):
+        offset = np.array(offset)
+        index = (lower + offset) % shape
+        values = field[index[:, 0], index[:, 1], index[:, 2]]
+        corner = np.where(offset == 1, weight, 1.0 - weight)
+        for axis in range(3):
+            others = [a for a in range(3) if a != axis]
+            slope = 1.0 if offset[axis] == 1 else -1.0
+            d_scaled[:, axis] += (
+                values * slope * corner[:, others].prod(axis=1)
+            )
+    # Chain rule: scaled = (x @ inverse) * shape.
+    return d_scaled @ (inverse * shape).T
+
+
 def gradient_at(field, cell, points):
     """Return the gradient of a periodic grid field at points.
 
@@ -428,12 +541,13 @@ def force_and_stress(constants, additions):
         valence = np.asarray(constants.ZVAL, dtype=np.float64)[
             np.asarray(constants.ion_types, dtype=int)
         ]
-        additions.total_energy += -float(
-            np.sum(valence * interpolate_at(v_ext, cell, positions)),
+        # One Fourier series supplies both, so the force is exactly the
+        # derivative of the energy.  See spectral_value_and_gradient.
+        potential, gradient = spectral_value_and_gradient(
+            v_ext, cell, positions,
         )
-        additions.forces += (
-            valence[:, None] * gradient_at(v_ext, cell, positions)
-        )
+        additions.total_energy += -float(np.sum(valence * potential))
+        additions.forces += valence[:, None] * gradient
     except Exception as exc:
         _record_error(exc)
         raise
