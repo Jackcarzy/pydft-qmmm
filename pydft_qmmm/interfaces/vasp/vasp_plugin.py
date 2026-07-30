@@ -316,7 +316,40 @@ def _external_potential(constants):
         fh.write(f"net_charge   = {net_charge:.6f}\n")
         fh.write(f"sigma        = {sigma}\n")
         fh.write(f"min V_ext eV = {float(v_ext.min()):.6f}\n")
+        fh.write(f"mean V_ext   = {float(v_ext.mean()):.3e}  (G=0 dropped)\n")
     return v_ext
+
+
+def electron_interaction_energy(charge_density, v_ext):
+    """Energy of the electrons in the external potential, in eV.
+
+    VASP normalizes its grid charge density so that
+
+        sum(charge_density) / N_grid == NELECT
+
+    (verified against a real run: 12881756160.000002 / 7741440 ==
+    1664.0).  The electron number density is therefore
+    n(r) = charge_density / V, and
+
+        integral n V_ext dV = sum(charge_density * V_ext) / N_grid
+
+    with no explicit cell volume: the V from n cancels the V from dV.
+    Multiplying by the volume, as an earlier draft did, overshoots by
+    ~2.7e4 for this cell.
+    """
+    if charge_density is None:
+        raise RuntimeError(
+            "charge_density is None, so the electron-V_ext energy term "
+            "cannot be formed.  Set LVHAR = .TRUE. in the INCAR so that "
+            "VASP populates it.",
+        )
+    density = np.asarray(charge_density)
+    if density.shape != v_ext.shape:
+        raise RuntimeError(
+            f"charge_density has shape {density.shape} but V_ext has "
+            f"{v_ext.shape}; they must share VASP's fine grid.",
+        )
+    return float(np.sum(density * v_ext) / density.size)
 
 
 def local_potential(constants, additions):
@@ -324,9 +357,23 @@ def local_potential(constants, additions):
 
     Defines the PLUGINS/LOCAL_POTENTIAL interface.  Called once per SCF
     step.
+
+    Also reports the associated energy.  VASP does NOT account for this
+    automatically: pot.F passes additions.total_energy straight into
+    E%EPLUGINS (assigning, not accumulating), and electron.F sums
+
+        TOTEN = EBANDSTR + DENC + ... + Ediel_sol + ESCPC + EPLUGINS
+
+    so leaving it at zero makes TOTEN inconsistent with the forces,
+    which DO include the full effect.  That inconsistency is exactly
+    what the Tier 2 finite-difference test measured.
     """
     try:
-        additions.total_potential += _external_potential(constants)
+        v_ext = _external_potential(constants)
+        additions.total_potential += v_ext
+        additions.total_energy = electron_interaction_energy(
+            constants.charge_density, v_ext,
+        )
     except Exception as exc:
         _record_error(exc)
         raise

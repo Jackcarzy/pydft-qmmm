@@ -347,7 +347,9 @@ def _constants(shape, cell, positions=None, zval=11.0):
         positions=np.asarray(positions) @ np.linalg.inv(cell),
         ion_types=np.zeros(len(positions), dtype=int),
         ZVAL=np.array([zval]),
-        charge_density=None,
+        # VASP normalizes sum(rho) = NELECT * N_grid; this stands in for
+        # 8 electrons spread uniformly.
+        charge_density=np.full(shape, 8.0),
     )
 
 
@@ -522,3 +524,59 @@ class TestCallbacks:
             additions,
         )
         assert additions.forces[0, 0] < 0.0
+
+
+class TestElectronInteractionEnergy:
+
+    def test_normalization_matches_vasp(self):
+        # A uniform density of NELECT over the grid in a constant V_ext
+        # must give exactly NELECT * V_ext.
+        shape = (16, 16, 16)
+        nelect = 8.0
+        density = np.full(shape, nelect)
+        v_ext = np.full(shape, -2.5)
+        got = vasp_plugin.electron_interaction_energy(density, v_ext)
+        assert got == pytest.approx(nelect * -2.5, rel=1e-12)
+
+    def test_rejects_missing_density(self):
+        with pytest.raises(RuntimeError, match="LVHAR"):
+            vasp_plugin.electron_interaction_energy(None, np.zeros((4, 4, 4)))
+
+    def test_rejects_shape_mismatch(self):
+        with pytest.raises(RuntimeError, match="shape"):
+            vasp_plugin.electron_interaction_energy(
+                np.zeros((4, 4, 4)), np.zeros((8, 8, 8)),
+            )
+
+    def test_local_potential_reports_the_energy(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        vasp_utils.write_mm_charges(
+            "MM_CHARGES", np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            step=0, sigma=0.4,
+        )
+        vasp_plugin.reset_cache()
+        constants = _constants(SHAPE, CELL)
+        # A UNIFORM density would give exactly zero: V_ext has zero mean
+        # by the G=0 convention, so only a density that overlaps the
+        # well contributes.  Concentrate the electrons on the charge.
+        density = np.zeros(SHAPE)
+        density[22:27, 22:27, 22:27] = 1.0
+        density *= 8.0 * density.size / density.sum()
+        constants.charge_density = density
+        additions = _additions(SHAPE)
+        vasp_plugin.local_potential(constants, additions)
+        # Electrons sitting in an attractive well must lower the energy.
+        assert additions.total_energy < 0.0
+
+    def test_uniform_density_gives_zero_energy(self):
+        # V_ext has zero mean (the G=0 term is dropped), so a uniform
+        # electron gas feels no net interaction.  Worth pinning: it is
+        # the reason the test above must localize the density.
+        v_ext = vasp_plugin.build_external_potential(
+            np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
+            SHAPE, CELL, sigma=0.4,
+        )
+        got = vasp_plugin.electron_interaction_energy(
+            np.full(SHAPE, 8.0), v_ext,
+        )
+        assert got == pytest.approx(0.0, abs=1e-9)
