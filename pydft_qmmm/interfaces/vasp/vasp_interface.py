@@ -140,10 +140,15 @@ class VaspInterface(QMInterface):
             # grid slab and a full-grid V_ext would be silently wrong.
             tags["PLUGINS/LOCAL_POTENTIAL"] = "T"
             tags["PLUGINS/FORCE_AND_STRESS"] = "T"
-            shutil.copyfile(
-                os.path.join(os.path.dirname(__file__), "vasp_plugin.py"),
-                os.path.join(self.directory, "vasp_plugin.py"),
-            )
+            # Both files: VASP imports vasp_plugin as a TOP-LEVEL module
+            # from the run directory, so its package-relative import of
+            # grid_potential falls back to a plain one, which only
+            # resolves if grid_potential.py sits beside it.
+            for name in ("vasp_plugin.py", "grid_potential.py"):
+                shutil.copyfile(
+                    os.path.join(os.path.dirname(__file__), name),
+                    os.path.join(self.directory, name),
+                )
         # Reuse the previous step's orbitals and density once they exist.
         if self.frame[0] and os.path.isfile(
                 os.path.join(self.directory, "WAVECAR"),

@@ -1,13 +1,13 @@
 """External-potential plugin for VASP QM/MM electrostatic embedding.
 
 VASP imports this module and calls into it; never run it directly.  The
-interface copies this file into each run directory, where VASP's
-embedded interpreter picks it up as ``vasp_plugin``.
+interface copies this file, together with grid_potential.py, into each
+run directory, where VASP's embedded interpreter picks it up as
+``vasp_plugin``.
 
-Dependencies are deliberately limited to numpy, and nothing from
-pydft_qmmm is imported, because this module is executed by the Python
-interpreter embedded inside VASP.  That restriction is also what lets
-the physics below be unit tested without VASP present.
+Only the callbacks and their caching live here.  The physics is in
+grid_potential, which is deliberately free of any dependency beyond
+numpy so that it can be exercised without VASP present.
 """
 from __future__ import annotations
 
@@ -16,363 +16,40 @@ import warnings
 
 import numpy as np
 
-# Vacuum permittivity, e/(V*Angstrom).  Defined locally rather than
-# imported so this module stays dependency-free.
-EPS0 = 0.005526349358057108
+try:
+    from .grid_potential import EPS0
+    from .grid_potential import build_external_potential
+    from .grid_potential import electron_interaction_energy
+    from .grid_potential import gradient_at
+    from .grid_potential import interpolant_gradient_at
+    from .grid_potential import interpolate_at
+    from .grid_potential import read_mm_charges
+    from .grid_potential import spectral_value_and_gradient
+except ImportError:
+    # VASP copies this file into the run directory and imports it as a
+    # top-level module, where the package-relative form is unavailable.
+    from grid_potential import EPS0
+    from grid_potential import build_external_potential
+    from grid_potential import electron_interaction_energy
+    from grid_potential import gradient_at
+    from grid_potential import interpolant_gradient_at
+    from grid_potential import interpolate_at
+    from grid_potential import read_mm_charges
+    from grid_potential import spectral_value_and_gradient
+
+__all__ = [
+    "EPS0", "CHARGE_FILE", "SENTINEL", "ERROR_FILE",
+    "build_external_potential", "electron_interaction_energy",
+    "gradient_at", "interpolant_gradient_at", "interpolate_at",
+    "read_mm_charges", "spectral_value_and_gradient",
+    "reset_cache", "local_potential", "force_and_stress",
+]
 
 CHARGE_FILE = "MM_CHARGES"
 SENTINEL = "PLUGIN_FIRED.txt"
 ERROR_FILE = "PLUGIN_ERROR.txt"
 
 _CACHE = {}
-
-
-def read_mm_charges(path, expect_step=None):
-    """Read the MM point charges written by the VASP interface.
-
-    Args:
-        path: The file to read.
-        expect_step: If given, the step stamp the file must carry.  A
-            mismatch means the interface failed to refresh the file and
-            the plugin would otherwise silently embed the previous
-            step's geometry.
-
-    Returns:
-        Positions (Nx3, Angstrom), charges (N, e), the step stamp, and
-        the Gaussian width sigma (Angstrom).
-    """
-    with open(path) as fh:
-        count, step, sigma = fh.readline().split()
-        count, step, sigma = int(count), int(step), float(sigma)
-        if count == 0:
-            # Skip loadtxt entirely: an empty subsystem II is a normal
-            # case, and loadtxt warns on empty input.
-            return np.zeros((0, 3)), np.zeros(0), step, sigma
-        data = np.loadtxt(fh, dtype=np.float64, ndmin=2)
-    if len(data) != count:
-        raise ValueError(
-            f"{path} declares {count} charges but holds {len(data)}.",
-        )
-    if expect_step is not None and step != expect_step:
-        raise ValueError(
-            f"{path} is at step {step}, expected {expect_step}.  The "
-            "interface did not refresh the MM charges.",
-        )
-    return data[:, :3].copy(), data[:, 3].copy(), step, sigma
-
-
-def _fractional_grid(shape):
-    """Build the fractional coordinates of every grid point."""
-    axes = [np.arange(n, dtype=np.float64) / n for n in shape]
-    return np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
-
-
-def _axis_spacings(shape, cell):
-    """Grid spacing along each axis, as perpendicular widths.
-
-    For a general (non-orthogonal) cell the spacing that matters is the
-    distance between adjacent lattice planes, which is the cell volume
-    divided by the area of the opposite face.
-    """
-    volume = abs(np.linalg.det(cell))
-    widths = np.array([
-        volume / np.linalg.norm(np.cross(cell[(i + 1) % 3], cell[(i + 2) % 3]))
-        for i in range(3)
-    ])
-    return widths / np.array(shape, dtype=np.float64)
-
-
-def spread_gaussian(positions, charges, shape, cell, sigma, cutoff=6.0):
-    """Spread point charges onto the grid as normalized Gaussians.
-
-    A point charge cannot be represented on a finite FFT grid, so each
-    is smeared with width sigma.
-
-    Only grid points within ``cutoff * sigma`` of a charge are touched.
-    Without that restriction the cost is O(N_charges * N_grid), which is
-    ruinous at production scale: 1149 MM charges on a 160**3 grid took
-    935 s per evaluation, versus well under a second here.  A 3D
-    Gaussian has about 7e-8 of its mass beyond 6 sigma, so the truncated
-    charge is conserved to roughly one part in 1e7.
-
-    Displacements are minimum-imaged in fractional coordinates, which is
-    exact for the nearest image and negligible in error while sigma is
-    small against the cell.
-
-    Args:
-        positions: An Nx3 array of positions (Angstrom).
-        charges: An N array of charges (e).
-        shape: The grid dimensions.
-        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
-        sigma: The Gaussian width (Angstrom).
-        cutoff: Truncation radius in units of sigma.
-
-    Returns:
-        The charge density on the grid (e/Angstrom**3).
-    """
-    shape = tuple(int(n) for n in shape)
-    rho = np.zeros(shape, dtype=np.float64)
-    if len(charges) == 0:
-        return rho
-    inverse = np.linalg.inv(cell)
-    prefactor = (2.0 * np.pi * sigma**2) ** -1.5
-    dimensions = np.array(shape)
-    half = np.ceil(
-        cutoff * sigma / _axis_spacings(shape, cell),
-    ).astype(int)
-    if np.any(2 * half + 1 >= dimensions):
-        # The cutoff box wraps the whole cell, so a local block would
-        # double-count images.  Fall back to evaluating on every point.
-        fractional = _fractional_grid(shape)
-        for position, charge in zip(positions, charges):
-            delta = fractional - (position @ inverse)
-            delta -= np.round(delta)
-            cartesian = delta @ cell
-            squared = np.einsum("...k,...k->...", cartesian, cartesian)
-            rho += charge * prefactor * np.exp(-0.5 * squared / sigma**2)
-        return rho
-    offsets = [np.arange(-h, h + 1) for h in half]
-    for position, charge in zip(positions, charges):
-        centre = np.round((position @ inverse) * dimensions).astype(int)
-        index = [(centre[i] + offsets[i]) % dimensions[i] for i in range(3)]
-        block = np.stack(
-            np.meshgrid(
-                *[
-                    (centre[i] + offsets[i]) / dimensions[i]
-                    for i in range(3)
-                ],
-                indexing="ij",
-            ),
-            axis=-1,
-        )
-        delta = block - (position @ inverse)
-        delta -= np.round(delta)
-        cartesian = delta @ cell
-        squared = np.einsum("...k,...k->...", cartesian, cartesian)
-        rho[np.ix_(*index)] += (
-            charge * prefactor * np.exp(-0.5 * squared / sigma**2)
-        )
-    return rho
-
-
-def _g_squared(shape, cell):
-    """Return |G|**2 on the reciprocal grid (Angstrom**-2)."""
-    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
-    axes = [np.fft.fftfreq(n) * n for n in shape]
-    miller = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
-    g_vectors = miller @ reciprocal
-    return np.einsum("...k,...k->...", g_vectors, g_vectors)
-
-
-def poisson_fft(rho, cell):
-    """Solve the periodic Poisson equation by FFT.
-
-    Solves del**2 phi = -rho / eps0.  In reciprocal space this is
-    phi_G = rho_G / (eps0 * |G|**2).  The G=0 term diverges for a
-    net-charged cell and is set to zero, which fixes the average
-    potential at zero -- equivalent to a uniform neutralizing
-    background, the same convention VASP uses for charged cells.
-
-    Args:
-        rho: The charge density on the grid (e/Angstrom**3).
-        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
-
-    Returns:
-        The electrostatic potential on the grid (volts).
-    """
-    g_squared = _g_squared(rho.shape, cell)
-    g_squared[0, 0, 0] = 1.0
-    phi_g = np.fft.fftn(rho) / (EPS0 * g_squared)
-    phi_g[0, 0, 0] = 0.0
-    return np.fft.ifftn(phi_g).real
-
-
-def build_external_potential(positions, charges, shape, cell, sigma):
-    """Build V_ext on the grid from MM point charges.
-
-    Args:
-        positions: An Nx3 array of positions (Angstrom).
-        charges: An N array of charges (e).
-        shape: The grid dimensions.
-        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
-        sigma: The Gaussian width (Angstrom).
-
-    Returns:
-        The external potential as electron potential ENERGY (eV), which
-        is the negative of the electrostatic potential.  This is the
-        quantity VASP's total_potential expects.
-    """
-    rho = spread_gaussian(positions, charges, shape, cell, sigma)
-    return -poisson_fft(rho, cell)
-
-
-def interpolate_at(field, cell, points):
-    """Trilinearly interpolate a periodic grid field at points.
-
-    Args:
-        field: A scalar field on the grid.
-        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
-        points: An Nx3 array of Cartesian positions (Angstrom).
-
-    Returns:
-        An N array of interpolated values.
-    """
-    shape = np.array(field.shape)
-    fractional = (np.atleast_2d(points) @ np.linalg.inv(cell)) % 1.0
-    scaled = fractional * shape
-    lower = np.floor(scaled).astype(int)
-    weight = scaled - lower
-    result = np.zeros(len(scaled))
-    for offset in np.ndindex(2, 2, 2):
-        offset = np.array(offset)
-        index = (lower + offset) % shape
-        corner = np.where(offset == 1, weight, 1.0 - weight)
-        result += (
-            field[index[:, 0], index[:, 1], index[:, 2]]
-            * corner.prod(axis=1)
-        )
-    return result
-
-
-def spectral_value_and_gradient(field, cell, points):
-    """Evaluate a periodic grid field and its gradient at points.
-
-    Both come from the same Fourier series,
-
-        f(R)      = sum_G  fhat(G) exp(i G.R)
-        grad f(R) = sum_G  i G fhat(G) exp(i G.R)
-
-    so the gradient is EXACTLY the derivative of the value -- which is
-    what molecular dynamics needs, and what neither of the alternatives
-    provides:
-
-      * interpolate_at + gradient_at mixes a trilinear value with a
-        spectral slope.  Measured cost: a reproducible 14 kJ/mol/A
-        finite-difference discrepancy (jobs 11566990, 11569337).
-      * interpolate_at + interpolant_gradient_at is self-consistent but
-        only C0, so at a grid node the slope is one-sided.  Measured
-        cost: a 2.0 kJ/mol/A transverse force where symmetry demands
-        zero.
-
-    The series is also exact for a band-limited field and correctly
-    periodic, unlike a minimum-image pairwise sum.
-
-    Evaluated separably: exp(i G.R) factorizes over the three lattice
-    directions, so this costs O(N_grid) work but only O(n) memory per
-    point rather than materializing a full complex grid per point.
-
-    Args:
-        field: A scalar field on the grid.
-        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
-        points: An Nx3 array of Cartesian positions (Angstrom).
-
-    Returns:
-        (values, gradients) with shapes (N,) and (N, 3).
-    """
-    points = np.atleast_2d(points)
-    shape = field.shape
-    coefficients = np.fft.fftn(field) / field.size
-    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
-    miller = [np.fft.fftfreq(n) * n for n in shape]
-    values = np.zeros(len(points))
-    gradients = np.zeros((len(points), 3))
-    for index, point in enumerate(points):
-        projection = reciprocal @ point
-        phase = [
-            np.exp(1j * miller[axis] * projection[axis]) for axis in range(3)
-        ]
-        values[index] = np.einsum(
-            "ijk,i,j,k->", coefficients, *phase,
-        ).real
-        for component in range(3):
-            total = 0.0 + 0.0j
-            for axis in range(3):
-                weighted = list(phase)
-                weighted[axis] = (
-                    miller[axis] * reciprocal[axis, component] * phase[axis]
-                )
-                total += np.einsum("ijk,i,j,k->", coefficients, *weighted)
-            gradients[index, component] = (1j * total).real
-    return values, gradients
-
-
-def interpolant_gradient_at(field, cell, points):
-    """Analytic gradient OF THE TRILINEAR INTERPOLANT at points.
-
-    This is deliberately not the same as gradient_at.  gradient_at
-    differentiates in reciprocal space, which is a better approximation
-    to the true gradient of the underlying field but is NOT the
-    derivative of the value interpolate_at returns -- trilinear
-    interpolation is only C0, so its slope inside a cell differs from
-    the spectral derivative by O(h).
-
-    For molecular dynamics the energy and the force must be exactly
-    consistent, or the integrator sees a non-conservative field.  Since
-    the nuclear energy correction uses interpolate_at, the matching
-    force must use this function.  Measured cost of getting that wrong:
-    a reproducible 14 kJ/mol/A discrepancy in the finite-difference
-    test (jobs 11566990 and 11569337, bit-identical), about 1.5% of the
-    nuclear correction but roughly half the NET force, because the
-    nuclear and electronic terms nearly cancel.
-
-    Args:
-        field: A scalar field on the grid.
-        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
-        points: An Nx3 array of Cartesian positions (Angstrom).
-
-    Returns:
-        An Nx3 array of gradients (field units per Angstrom).
-    """
-    points = np.atleast_2d(points)
-    shape = np.array(field.shape)
-    inverse = np.linalg.inv(cell)
-    fractional = (points @ inverse) % 1.0
-    scaled = fractional * shape
-    lower = np.floor(scaled).astype(int)
-    weight = scaled - lower
-    # d(value)/d(scaled coordinate), one column per axis.
-    d_scaled = np.zeros((len(points), 3))
-    for offset in np.ndindex(2, 2, 2):
-        offset = np.array(offset)
-        index = (lower + offset) % shape
-        values = field[index[:, 0], index[:, 1], index[:, 2]]
-        corner = np.where(offset == 1, weight, 1.0 - weight)
-        for axis in range(3):
-            others = [a for a in range(3) if a != axis]
-            slope = 1.0 if offset[axis] == 1 else -1.0
-            d_scaled[:, axis] += (
-                values * slope * corner[:, others].prod(axis=1)
-            )
-    # Chain rule: scaled = (x @ inverse) * shape.
-    return d_scaled @ (inverse * shape).T
-
-
-def gradient_at(field, cell, points):
-    """Return the gradient of a periodic grid field at points.
-
-    The derivative is taken in reciprocal space, which is exact for a
-    band-limited field, and the three components are then interpolated,
-    so the gradient is consistent with interpolate_at.
-
-    Args:
-        field: A scalar field on the grid.
-        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
-        points: An Nx3 array of Cartesian positions (Angstrom).
-
-    Returns:
-        An Nx3 array of gradients (field units per Angstrom).
-    """
-    points = np.atleast_2d(points)
-    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
-    axes = [np.fft.fftfreq(n) * n for n in field.shape]
-    miller = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
-    g_vectors = miller @ reciprocal
-    field_g = np.fft.fftn(field)
-    gradient = np.zeros((len(points), 3))
-    for axis in range(3):
-        component = np.fft.ifftn(1j * g_vectors[..., axis] * field_g).real
-        gradient[:, axis] = interpolate_at(component, cell, points)
-    return gradient
 
 
 def reset_cache():
@@ -431,38 +108,6 @@ def _external_potential(constants):
         fh.write(f"min V_ext eV = {float(v_ext.min()):.6f}\n")
         fh.write(f"mean V_ext   = {float(v_ext.mean()):.3e}  (G=0 dropped)\n")
     return v_ext
-
-
-def electron_interaction_energy(charge_density, v_ext):
-    """Energy of the electrons in the external potential, in eV.
-
-    VASP normalizes its grid charge density so that
-
-        sum(charge_density) / N_grid == NELECT
-
-    (verified against a real run: 12881756160.000002 / 7741440 ==
-    1664.0).  The electron number density is therefore
-    n(r) = charge_density / V, and
-
-        integral n V_ext dV = sum(charge_density * V_ext) / N_grid
-
-    with no explicit cell volume: the V from n cancels the V from dV.
-    Multiplying by the volume, as an earlier draft did, overshoots by
-    ~2.7e4 for this cell.
-    """
-    if charge_density is None:
-        raise RuntimeError(
-            "charge_density is None, so the electron-V_ext energy term "
-            "cannot be formed.  Set LVHAR = .TRUE. in the INCAR so that "
-            "VASP populates it.",
-        )
-    density = np.asarray(charge_density)
-    if density.shape != v_ext.shape:
-        raise RuntimeError(
-            f"charge_density has shape {density.shape} but V_ext has "
-            f"{v_ext.shape}; they must share VASP's fine grid.",
-        )
-    return float(np.sum(density * v_ext) / density.size)
 
 
 def local_potential(constants, additions):

@@ -10,6 +10,7 @@ import types
 import numpy as np
 import pytest
 
+from pydft_qmmm.interfaces.vasp import grid_potential
 from pydft_qmmm.interfaces.vasp import vasp_plugin
 from pydft_qmmm.interfaces.vasp import vasp_utils
 
@@ -23,7 +24,7 @@ class TestMMChargeHandoff:
         vasp_utils.write_mm_charges(
             path, positions, charges, step=7, sigma=0.45,
         )
-        got_pos, got_q, got_step, got_sigma = vasp_plugin.read_mm_charges(path)
+        got_pos, got_q, got_step, got_sigma = grid_potential.read_mm_charges(path)
         assert got_step == 7
         assert got_sigma == pytest.approx(0.45, abs=1e-12)
         assert got_pos == pytest.approx(positions, abs=1e-12)
@@ -34,7 +35,7 @@ class TestMMChargeHandoff:
         vasp_utils.write_mm_charges(
             path, np.zeros((0, 3)), np.zeros(0), step=0, sigma=0.3,
         )
-        got_pos, got_q, _, _ = vasp_plugin.read_mm_charges(path)
+        got_pos, got_q, _, _ = grid_potential.read_mm_charges(path)
         assert got_pos.shape == (0, 3)
         assert got_q.shape == (0,)
 
@@ -45,11 +46,11 @@ class TestMMChargeHandoff:
             step=3, sigma=0.3,
         )
         with pytest.raises(ValueError, match="step"):
-            vasp_plugin.read_mm_charges(path, expect_step=4)
+            grid_potential.read_mm_charges(path, expect_step=4)
 
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            vasp_plugin.read_mm_charges(str(tmp_path / "nope"))
+            grid_potential.read_mm_charges(str(tmp_path / "nope"))
 
     def test_mismatched_count_is_rejected(self, tmp_path):
         path = str(tmp_path / "MM_CHARGES")
@@ -57,7 +58,7 @@ class TestMMChargeHandoff:
             fh.write("3 0 3.0e-01\n")
             fh.write("0.0 0.0 0.0 1.0\n")
         with pytest.raises(ValueError, match="declares"):
-            vasp_plugin.read_mm_charges(path)
+            grid_potential.read_mm_charges(path)
 
     def test_length_mismatch_is_rejected_on_write(self, tmp_path):
         with pytest.raises(ValueError, match="positions"):
@@ -76,7 +77,7 @@ class TestSpreadGaussian:
     def test_conserves_charge(self):
         positions = np.array([[5.0, 5.0, 5.0], [2.0, 3.0, 4.0]])
         charges = np.array([1.0, -0.5])
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             positions, charges, SHAPE, CELL, sigma=0.4,
         )
         d_volume = abs(np.linalg.det(CELL)) / np.prod(SHAPE)
@@ -84,7 +85,7 @@ class TestSpreadGaussian:
 
     def test_peak_is_at_the_charge(self):
         positions = np.array([[5.0, 5.0, 5.0]])
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             positions, np.array([1.0]), SHAPE, CELL, sigma=0.4,
         )
         peak = np.unravel_index(np.argmax(rho), SHAPE)
@@ -94,7 +95,7 @@ class TestSpreadGaussian:
     def test_wraps_across_the_periodic_boundary(self):
         # A charge on the origin must not pile up at the far face;
         # minimum-image wrapping makes the density symmetric about it.
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             np.array([[0.0, 5.0, 5.0]]), np.array([1.0]),
             SHAPE, CELL, sigma=0.4,
         )
@@ -105,10 +106,10 @@ class TestSpreadGaussian:
         # point, so this compares the fast path against the exact one.
         positions = np.array([[5.0, 5.0, 5.0], [2.0, 3.0, 4.0]])
         charges = np.array([1.0, -0.5])
-        fast = vasp_plugin.spread_gaussian(
+        fast = grid_potential.spread_gaussian(
             positions, charges, SHAPE, CELL, sigma=0.4,
         )
-        exact = vasp_plugin.spread_gaussian(
+        exact = grid_potential.spread_gaussian(
             positions, charges, SHAPE, CELL, sigma=0.4, cutoff=1000.0,
         )
         assert fast == pytest.approx(exact, abs=1e-9)
@@ -122,14 +123,14 @@ class TestSpreadGaussian:
         shape = (96, 96, 96)
         positions = rng.uniform(0.0, 29.899, (1149, 3))
         charges = rng.uniform(-1.0, 1.0, 1149)
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             positions, charges, shape, cell, sigma=0.3,
         )
         d_volume = abs(np.linalg.det(cell)) / np.prod(shape)
         assert rho.sum() * d_volume == pytest.approx(charges.sum(), abs=1e-5)
 
     def test_empty_selection_gives_zero_density(self):
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             np.zeros((0, 3)), np.zeros(0), SHAPE, CELL, sigma=0.4,
         )
         assert rho.shape == SHAPE
@@ -146,20 +147,20 @@ class TestPoisson:
         # Apply the Laplacian back to phi in reciprocal space and
         # recover rho.  Exact up to the G=0 term, so cell-size
         # independent -- the strongest available check.
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             np.array([[5.0, 5.0, 5.0], [7.0, 5.0, 5.0]]),
             np.array([1.0, -1.0]), SHAPE, CELL, sigma=0.5,
         )
-        phi = vasp_plugin.poisson_fft(rho, CELL)
+        phi = grid_potential.poisson_fft(rho, CELL)
         phi_g = np.fft.fftn(phi)
-        g_squared = vasp_plugin._g_squared(SHAPE, CELL)
-        recovered = np.fft.ifftn(phi_g * g_squared * vasp_plugin.EPS0).real
+        g_squared = grid_potential._g_squared(SHAPE, CELL)
+        recovered = np.fft.ifftn(phi_g * g_squared * grid_potential.EPS0).real
         assert recovered == pytest.approx(rho - rho.mean(), abs=1e-9)
 
     def test_positive_charge_lowers_electron_potential_energy(self):
         # The single likeliest bug, asserted alone.  Electrons are
         # attracted to a positive charge, so V_ext must be negative.
-        v_ext = vasp_plugin.build_external_potential(
+        v_ext = grid_potential.build_external_potential(
             np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
             SHAPE, CELL, sigma=0.4,
         )
@@ -170,32 +171,32 @@ class TestPoisson:
         # a unit error cannot cancel against a sign error.
         positions = np.array([[5.0, 5.0, 5.0]])
         charges = np.array([1.0])
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             positions, charges, SHAPE, CELL, sigma=0.4,
         )
-        phi = vasp_plugin.poisson_fft(rho, CELL)
-        v_ext = vasp_plugin.build_external_potential(
+        phi = grid_potential.poisson_fft(rho, CELL)
+        v_ext = grid_potential.build_external_potential(
             positions, charges, SHAPE, CELL, sigma=0.4,
         )
         assert phi[24, 24, 24] > 0.0
         assert v_ext == pytest.approx(-phi, abs=1e-12)
 
     def test_neutral_system_is_insensitive_to_the_g0_convention(self):
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             np.array([[4.0, 5.0, 5.0], [6.0, 5.0, 5.0]]),
             np.array([1.0, -1.0]), SHAPE, CELL, sigma=0.4,
         )
-        phi = vasp_plugin.poisson_fft(rho, CELL)
+        phi = grid_potential.poisson_fft(rho, CELL)
         assert phi.mean() == pytest.approx(0.0, abs=1e-10)
 
     def test_charged_system_has_zero_mean_potential(self):
         # The G=0 choice fixes the average potential at zero, which is
         # the uniform neutralizing background convention.
-        rho = vasp_plugin.spread_gaussian(
+        rho = grid_potential.spread_gaussian(
             np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
             SHAPE, CELL, sigma=0.4,
         )
-        phi = vasp_plugin.poisson_fft(rho, CELL)
+        phi = grid_potential.poisson_fft(rho, CELL)
         assert phi.mean() == pytest.approx(0.0, abs=1e-10)
 
 
@@ -205,15 +206,15 @@ class TestInterpolation:
         field = np.arange(np.prod(SHAPE), dtype=np.float64).reshape(SHAPE)
         # Grid point (3, 5, 7) sits at 10 Angstrom * index / 48.
         point = np.array([[10.0 * 3 / 48, 10.0 * 5 / 48, 10.0 * 7 / 48]])
-        got = vasp_plugin.interpolate_at(field, CELL, point)
+        got = grid_potential.interpolate_at(field, CELL, point)
         assert got[0] == pytest.approx(field[3, 5, 7], rel=1e-9)
 
     def test_interpolation_is_periodic(self):
         field = np.arange(np.prod(SHAPE), dtype=np.float64).reshape(SHAPE)
         inside = np.array([[1.0, 2.0, 3.0]])
         shifted = inside + np.array([10.0, -10.0, 20.0])
-        assert vasp_plugin.interpolate_at(field, CELL, inside) == pytest.approx(
-            vasp_plugin.interpolate_at(field, CELL, shifted), rel=1e-9,
+        assert grid_potential.interpolate_at(field, CELL, inside) == pytest.approx(
+            grid_potential.interpolate_at(field, CELL, shifted), rel=1e-9,
         )
 
     def test_gradient_is_exact_for_a_fourier_mode(self):
@@ -236,7 +237,7 @@ class TestInterpolation:
             [nodes * spacing, np.full(2, 4 * spacing), np.full(2, 7 * spacing)],
             axis=-1,
         )
-        got = vasp_plugin.gradient_at(field, CELL, points)
+        got = grid_potential.gradient_at(field, CELL, points)
         expected_x = (
             2 * np.pi / length * np.cos(2 * np.pi * points[:, 0] / length)
         )
@@ -250,19 +251,19 @@ class TestInterpolation:
         # piecewise linear, so a much smaller step just returns the
         # constant slope inside one grid cell, which differs from the
         # smooth spectral derivative by O(h).
-        v_ext = vasp_plugin.build_external_potential(
+        v_ext = grid_potential.build_external_potential(
             np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
             SHAPE, CELL, sigma=0.8,
         )
         point = np.array([[6.5, 5.3, 4.7]])
-        analytic = vasp_plugin.gradient_at(v_ext, CELL, point)[0]
+        analytic = grid_potential.gradient_at(v_ext, CELL, point)[0]
         step = 10.0 / SHAPE[0]
         numerical = np.zeros(3)
         for axis in range(3):
             shift = np.zeros((1, 3))
             shift[0, axis] = step
-            plus = vasp_plugin.interpolate_at(v_ext, CELL, point + shift)[0]
-            minus = vasp_plugin.interpolate_at(v_ext, CELL, point - shift)[0]
+            plus = grid_potential.interpolate_at(v_ext, CELL, point + shift)[0]
+            minus = grid_potential.interpolate_at(v_ext, CELL, point - shift)[0]
             numerical[axis] = (plus - minus) / (2 * step)
         assert analytic == pytest.approx(numerical, rel=0.05)
 
@@ -276,17 +277,17 @@ class TestCoulombLimit:
         # periodic-image error.
         cell = np.diag([30.0, 30.0, 30.0])
         shape = (150, 150, 150)
-        phi = vasp_plugin.poisson_fft(
-            vasp_plugin.spread_gaussian(
+        phi = grid_potential.poisson_fft(
+            grid_potential.spread_gaussian(
                 np.array([[15.0, 15.0, 15.0]]), np.array([1.0]),
                 shape, cell, sigma=0.3,
             ),
             cell,
         )
-        near = vasp_plugin.interpolate_at(
+        near = grid_potential.interpolate_at(
             phi, cell, np.array([[17.0, 15.0, 15.0]]),
         )[0]
-        far = vasp_plugin.interpolate_at(
+        far = grid_potential.interpolate_at(
             phi, cell, np.array([[19.0, 15.0, 15.0]]),
         )[0]
         expected = COULOMB * (1.0 / 2.0 - 1.0 / 4.0)
@@ -311,15 +312,15 @@ class TestCoulombLimit:
         expected = COULOMB * (1.0 / 2.0 - 1.0 / 10.0)
 
         def residual(sigma):
-            phi = vasp_plugin.poisson_fft(
-                vasp_plugin.spread_gaussian(
+            phi = grid_potential.poisson_fft(
+                grid_potential.spread_gaussian(
                     np.array([plus, minus]), np.array([1.0, -1.0]),
                     shape, cell, sigma,
                 ),
                 cell,
             )
             return abs(
-                vasp_plugin.interpolate_at(phi, cell, probe)[0] - expected,
+                grid_potential.interpolate_at(phi, cell, probe)[0] - expected,
             )
 
         sigma_dominated = [residual(s) for s in (1.2, 0.8, 0.6)]
@@ -535,16 +536,16 @@ class TestElectronInteractionEnergy:
         nelect = 8.0
         density = np.full(shape, nelect)
         v_ext = np.full(shape, -2.5)
-        got = vasp_plugin.electron_interaction_energy(density, v_ext)
+        got = grid_potential.electron_interaction_energy(density, v_ext)
         assert got == pytest.approx(nelect * -2.5, rel=1e-12)
 
     def test_rejects_missing_density(self):
         with pytest.raises(RuntimeError, match="LVHAR"):
-            vasp_plugin.electron_interaction_energy(None, np.zeros((4, 4, 4)))
+            grid_potential.electron_interaction_energy(None, np.zeros((4, 4, 4)))
 
     def test_rejects_shape_mismatch(self):
         with pytest.raises(RuntimeError, match="shape"):
-            vasp_plugin.electron_interaction_energy(
+            grid_potential.electron_interaction_energy(
                 np.zeros((4, 4, 4)), np.zeros((8, 8, 8)),
             )
 
@@ -568,11 +569,11 @@ class TestElectronInteractionEnergy:
         # V_ext has zero mean (the G=0 term is dropped), so a uniform
         # electron gas feels no net interaction.  Worth pinning: it is
         # the reason the test above must localize the density.
-        v_ext = vasp_plugin.build_external_potential(
+        v_ext = grid_potential.build_external_potential(
             np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
             SHAPE, CELL, sigma=0.4,
         )
-        got = vasp_plugin.electron_interaction_energy(
+        got = grid_potential.electron_interaction_energy(
             np.full(SHAPE, 8.0), v_ext,
         )
         assert got == pytest.approx(0.0, abs=1e-9)
@@ -582,12 +583,12 @@ class TestInterpolantGradient:
     """The gradient that must match interpolate_at exactly."""
 
     def test_matches_finite_differences_to_machine_precision(self):
-        v_ext = vasp_plugin.build_external_potential(
+        v_ext = grid_potential.build_external_potential(
             np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
             SHAPE, CELL, sigma=0.8,
         )
         point = np.array([[6.5, 5.3, 4.7]])
-        analytic = vasp_plugin.interpolant_gradient_at(v_ext, CELL, point)[0]
+        analytic = grid_potential.interpolant_gradient_at(v_ext, CELL, point)[0]
         # A step well inside one grid cell, where the trilinear
         # interpolant is exactly linear, so the difference quotient is
         # the analytic slope.
@@ -596,8 +597,8 @@ class TestInterpolantGradient:
         for axis in range(3):
             shift = np.zeros((1, 3))
             shift[0, axis] = step
-            plus = vasp_plugin.interpolate_at(v_ext, CELL, point + shift)[0]
-            minus = vasp_plugin.interpolate_at(v_ext, CELL, point - shift)[0]
+            plus = grid_potential.interpolate_at(v_ext, CELL, point + shift)[0]
+            minus = grid_potential.interpolate_at(v_ext, CELL, point - shift)[0]
             numerical[axis] = (plus - minus) / (2 * step)
         assert analytic == pytest.approx(numerical, rel=1e-9)
 
@@ -605,13 +606,13 @@ class TestInterpolantGradient:
         # Documents WHY both exist: they are genuinely different, and
         # using the spectral one for the force while the energy uses
         # interpolate_at cost a reproducible 14 kJ/mol/A.
-        v_ext = vasp_plugin.build_external_potential(
+        v_ext = grid_potential.build_external_potential(
             np.array([[5.0, 5.0, 5.0]]), np.array([1.0]),
             SHAPE, CELL, sigma=0.8,
         )
         point = np.array([[6.5, 5.3, 4.7]])
-        spectral = vasp_plugin.gradient_at(v_ext, CELL, point)[0]
-        interpolant = vasp_plugin.interpolant_gradient_at(v_ext, CELL, point)[0]
+        spectral = grid_potential.gradient_at(v_ext, CELL, point)[0]
+        interpolant = grid_potential.interpolant_gradient_at(v_ext, CELL, point)[0]
         assert not np.allclose(spectral, interpolant, rtol=1e-6)
 
     def test_energy_and_force_corrections_converge_quadratically(
@@ -705,12 +706,12 @@ class TestConstantFieldFigure2b:
         # sigma/eps0, and V_ext = -phi ramps linearly.
         surface_charge = 0.001          # e / Angstrom**2
         positions, charges = self._sheets(surface_charge)
-        v_ext = vasp_plugin.build_external_potential(
+        v_ext = grid_potential.build_external_potential(
             positions, charges, self.FIELD_SHAPE, self.FIELD_CELL, 0.4,
         )
         # Probe along z on the axis, well away from both sheets.
         probes = np.array([[5.0, 5.0, z] for z in (8.0, 10.0, 12.0)])
-        _, gradients = vasp_plugin.spectral_value_and_gradient(
+        _, gradients = grid_potential.spectral_value_and_gradient(
             v_ext, self.FIELD_CELL, probes,
         )
         # NOT sigma/eps0: that is the infinite-parallel-plate result and
@@ -721,7 +722,7 @@ class TestConstantFieldFigure2b:
         #     E_out - E_in = sigma / eps0
         # giving |E_in| = (sigma/eps0) * (L - d) / L, i.e. a third here.
         inside, outside = 20.0, 10.0
-        expected = (surface_charge / vasp_plugin.EPS0) * outside / (
+        expected = (surface_charge / grid_potential.EPS0) * outside / (
             inside + outside
         )
         # dV_ext/dz is uniform between the sheets ...
@@ -738,11 +739,11 @@ class TestConstantFieldFigure2b:
         # the plates must reverse and scale as -d/(L-d), so that the
         # potential closes on itself around the cell.
         positions, charges = self._sheets(0.001)
-        v_ext = vasp_plugin.build_external_potential(
+        v_ext = grid_potential.build_external_potential(
             positions, charges, self.FIELD_SHAPE, self.FIELD_CELL, 0.4,
         )
         probes = np.array([[5.0, 5.0, 10.0], [5.0, 5.0, 25.0]])
-        _, gradients = vasp_plugin.spectral_value_and_gradient(
+        _, gradients = grid_potential.spectral_value_and_gradient(
             v_ext, self.FIELD_CELL, probes,
         )
         assert gradients[1, 2] == pytest.approx(
@@ -755,15 +756,15 @@ class TestConstantFieldFigure2b:
         # Figure 2b, and exactly what cancels VASP's uncorrected force.
         surface_charge = 0.001
         positions, charges = self._sheets(surface_charge)
-        v_ext = vasp_plugin.build_external_potential(
+        v_ext = grid_potential.build_external_potential(
             positions, charges, self.FIELD_SHAPE, self.FIELD_CELL, 0.4,
         )
         hydrogen = np.array([[5.0, 5.0, 10.0]])
-        _, gradient = vasp_plugin.spectral_value_and_gradient(
+        _, gradient = grid_potential.spectral_value_and_gradient(
             v_ext, self.FIELD_CELL, hydrogen,
         )
         correction = 1.0 * gradient[0]              # Z_H = 1
-        field = (surface_charge / vasp_plugin.EPS0) * 10.0 / 30.0
+        field = (surface_charge / grid_potential.EPS0) * 10.0 / 30.0
         assert abs(correction[2]) == pytest.approx(field, rel=0.05)
         assert correction[0] == pytest.approx(0.0, abs=1e-3)
         assert correction[1] == pytest.approx(0.0, abs=1e-3)
