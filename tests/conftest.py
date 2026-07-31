@@ -152,6 +152,25 @@ def vasp_qmmm_system(spce_system):
 
 
 @pytest.fixture
+def vasp_three_subsystem_system(vasp_qmmm_system):
+    """vasp_qmmm_system with a genuinely populated subsystem III.
+
+    The stock fixture assigns 3 atoms to subsystem I and 1149 to
+    subsystem II, leaving subsystem III EMPTY.  That makes any assertion
+    of the form "VASP contributes nothing to subsystem III" vacuously
+    true, since it ranges over a zero-length array -- the same way job
+    11566828 passed while testing no physics at all.  Demote the outer
+    half of subsystem II so such assertions have atoms to range over.
+    """
+    near = sorted(vasp_qmmm_system.select("subsystem II"))
+    for atom in near[len(near) // 2:]:
+        vasp_qmmm_system.subsystems[atom] = Subsystem.III
+    assert len(vasp_qmmm_system.select("subsystem III")) > 0
+    assert len(vasp_qmmm_system.select("subsystem II")) > 0
+    return vasp_qmmm_system
+
+
+@pytest.fixture
 def vasp_embedded(vasp_qmmm_system, vasp_workdir):
     """A VASP potential with electrostatic embedding switched on."""
     from pydft_qmmm.interfaces.vasp.vasp_factory import vasp_interface_factory

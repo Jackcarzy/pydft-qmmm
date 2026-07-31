@@ -259,6 +259,47 @@ class TestMMForceReturn:
             vasp_embedded._read_mm_forces()
 
 
+class TestSubsystemIIIIsLeftToOpenMM:
+    """Direct QM/MM/PME assigns subsystem III's force to the MM level.
+
+    VASP supplies X = QM -- subsystem III polarizes the QM density and
+    VASP differentiates that with respect to subsystem I.  It must NOT
+    also supply Y: OpenMM already computes the force on subsystem III
+    from the static forcefield charges on subsystem I, so a
+    QM-density-derived contribution here would be counted twice.  See
+    John et al., JCP 161, 034103 (2024), Table I.
+    """
+
+    def test_vasp_leaves_subsystem_iii_at_zero(
+            self, vasp_three_subsystem_system, vasp_workdir, monkeypatch,
+    ):
+        potential = vasp_interface_factory(
+            vasp_three_subsystem_system,
+            directory=str(vasp_workdir / "vasp"),
+            pp_path="unused",
+            embedding=True,
+        )
+        system = vasp_three_subsystem_system
+        qm = sorted(system.select("subsystem I"))
+        near = sorted(system.select("subsystem II"))
+        far = sorted(system.select("subsystem III"))
+        assert far, "fixture must populate subsystem III or this is vacuous"
+        qm_rows = np.ones((len(qm), 3))
+        near_rows = np.full((len(near), 3), 2.0)
+        monkeypatch.setattr(potential, "_run", lambda: (0.0, qm_rows))
+        monkeypatch.setattr(
+            potential, "_read_mm_forces", lambda: near_rows,
+        )
+
+        forces = potential.compute_forces()
+
+        assert forces[qm] == pytest.approx(qm_rows)
+        assert forces[near] == pytest.approx(near_rows)
+        # Zero from VASP, not zero overall -- the composite calculator
+        # adds OpenMM's nonzero MM-level rows on top of this.
+        assert forces[far] == pytest.approx(np.zeros((len(far), 3)))
+
+
 requires_vasp = pytest.mark.skipif(
     not os.environ.get("PYDFT_QMMM_VASP_COMMAND"),
     reason="set PYDFT_QMMM_VASP_COMMAND to run VASP-backed tests",
