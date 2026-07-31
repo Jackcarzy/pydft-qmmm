@@ -498,3 +498,37 @@ class TestPME:
         assert minimum < -1e-3, f"V_ext is essentially zero ({minimum})"
         assert np.isfinite(energy)
         print(f"  embedded energy: {energy:.6f} kJ/mol")
+
+
+@requires_vasp
+class TestThirdLaw:
+    """Momentum conservation: the reason Milestone 3 exists."""
+
+    def test_qm_and_mm_forces_cancel(
+            self, vasp_qmmm_system, vasp_workdir, vasp_pp_library,
+    ):
+        potential = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(vasp_workdir / "vasp"),
+            pp_path=vasp_pp_library,
+            embedding=True,
+            incar={"ENCUT": 250, "EDIFF": 1e-7},
+        )
+        forces = potential.compute_forces()
+        qm = sorted(vasp_qmmm_system.select("subsystem I"))
+        mm = sorted(vasp_qmmm_system.select("subsystem II"))
+        # Only over I + II.  Subsystem III feels nothing through the
+        # near-field channel -- under direct QM/MM/PME its reaction is
+        # the Y = MM term OpenMM supplies -- so including it would show
+        # a violation that is expected rather than a bug.
+        total = forces[qm].sum(axis=0) + forces[mm].sum(axis=0)
+        scale = np.abs(forces[qm + mm]).max()
+        print(f"\n  QM atoms          : {len(qm)}")
+        print(f"  MM atoms (II)     : {len(mm)}")
+        print(f"  sum F over I+II   : {total}")
+        print(f"  largest |F|       : {scale:.3f} kJ/mol/A")
+        print(f"  relative violation: {np.abs(total).max() / scale:.3e}")
+        # A few percent rather than <1% means the contraction and the
+        # spreading disagree on sigma or cutoff -- check that sigma is
+        # read from MM_CHARGES in both, not hardcoded.
+        assert np.abs(total).max() < 0.01 * scale
