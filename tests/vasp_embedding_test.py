@@ -15,6 +15,7 @@ from pydft_qmmm import QMMMHamiltonian
 from pydft_qmmm.calculators import PotentialCalculator
 from pydft_qmmm.interfaces import MMInterface
 from pydft_qmmm.interfaces.vasp import vasp_plugin
+from pydft_qmmm.interfaces.vasp import vasp_utils
 from pydft_qmmm.interfaces.vasp.vasp_factory import vasp_interface_factory
 
 
@@ -198,6 +199,64 @@ class TestCouplingConfiguration:
             self._configure(
                 coupling, potential, vasp_qmmm_system, monkeypatch,
             )
+
+
+class TestMMForceReturn:
+    """The driver side of the QM->MM back-reaction."""
+
+    @staticmethod
+    def _write(potential, rows, step=0):
+        os.makedirs(potential.directory, exist_ok=True)
+        path = os.path.join(potential.directory, "MM_FORCES")
+        with open(path, "w") as fh:
+            fh.write(f"{len(rows)} {step}\n")
+            for fx, fy, fz in rows:
+                fh.write(f"{fx:.12e} {fy:.12e} {fz:.12e}\n")
+        # _run increments frame[0] AFTER the plugin has stamped
+        # MM_FORCES, so a file written for step N is read back while the
+        # counter already reads N+1.  Mirror that here rather than
+        # letting the reader see a counter no real run could produce.
+        potential.frame[0] = step + 1
+        return path
+
+    def test_reads_forces_into_subsystem_ii_rows(self, vasp_embedded):
+        indices = sorted(vasp_embedded.system.select("subsystem II"))
+        rows = np.arange(3 * len(indices), dtype=float).reshape(-1, 3)
+        self._write(vasp_embedded, rows)
+        assert vasp_embedded._read_mm_forces() == pytest.approx(rows)
+
+    def test_missing_file_raises(self, vasp_embedded):
+        os.makedirs(vasp_embedded.directory, exist_ok=True)
+        path = os.path.join(vasp_embedded.directory, "MM_FORCES")
+        if os.path.isfile(path):
+            os.remove(path)
+        with pytest.raises(vasp_utils.VaspExecutionError, match="MM_FORCES"):
+            vasp_embedded._read_mm_forces()
+
+    def test_all_zero_forces_raise(self, vasp_embedded):
+        # Identically zero is what the unimplemented back-reaction looked
+        # like in Milestone 2, so it must not pass silently -- otherwise
+        # this milestone is indistinguishable from not having run.
+        indices = sorted(vasp_embedded.system.select("subsystem II"))
+        self._write(vasp_embedded, np.zeros((len(indices), 3)))
+        with pytest.raises(vasp_utils.VaspExecutionError, match="zero"):
+            vasp_embedded._read_mm_forces()
+
+    def test_row_count_mismatch_raises(self, vasp_embedded):
+        indices = sorted(vasp_embedded.system.select("subsystem II"))
+        self._write(vasp_embedded, np.ones((len(indices) - 1, 3)))
+        with pytest.raises(vasp_utils.VaspExecutionError, match="rows"):
+            vasp_embedded._read_mm_forces()
+
+    def test_stale_step_raises(self, vasp_embedded):
+        # The second of the two stale-file guards.  Deleting MM_FORCES
+        # before a launch covers a run that dies early; this covers a
+        # file that exists but belongs to a different step.
+        indices = sorted(vasp_embedded.system.select("subsystem II"))
+        self._write(vasp_embedded, np.ones((len(indices), 3)), step=3)
+        vasp_embedded.frame[0] = 9
+        with pytest.raises(ValueError, match="step"):
+            vasp_embedded._read_mm_forces()
 
 
 requires_vasp = pytest.mark.skipif(

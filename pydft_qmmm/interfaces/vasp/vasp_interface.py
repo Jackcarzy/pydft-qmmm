@@ -250,6 +250,52 @@ class VaspInterface(QMInterface):
         )
         return len(self.system.charges)
 
+    def _read_mm_forces(self) -> NDArray[np.float64]:
+        r"""Read the QM->MM forces the plugin wrote.
+
+        Returns:
+            An Nx3 array of forces
+            (:math:`\mathrm{kJ\;mol^{-1}\;\mathring{A}^{-1}}`) ordered to
+            match ``sorted(system.select("subsystem II"))``.
+
+        Raises:
+            VaspExecutionError: If the file is absent, disagrees with
+                subsystem II on the atom count, or holds forces that are
+                identically zero -- each of which means the
+                back-reaction was not applied.
+            ValueError: If the file belongs to a different step.
+        """
+        path = os.path.join(self.directory, "MM_FORCES")
+        if not os.path.isfile(path):
+            raise vasp_utils.VaspExecutionError(
+                self.directory,
+                "MM_FORCES is absent, so the QM->MM back-reaction was "
+                "never computed and momentum will not be conserved.",
+            )
+        # _run increments frame[0] only after the plugin has already
+        # stamped MM_FORCES, so the file carries the PREVIOUS counter
+        # value.  The same expression holds when _run returns from its
+        # system_cache without launching VASP: the counter does not
+        # advance either, and the file on disk is still the one the last
+        # real run wrote.
+        forces, _ = vasp_utils.read_mm_forces(
+            path, expect_step=self.frame[0] - 1,
+        )
+        indices = sorted(self.system.select("subsystem II"))
+        if len(forces) != len(indices):
+            raise vasp_utils.VaspExecutionError(
+                self.directory,
+                f"MM_FORCES holds {len(forces)} rows but subsystem II "
+                f"has {len(indices)} atoms.",
+            )
+        if len(forces) and not np.any(forces):
+            raise vasp_utils.VaspExecutionError(
+                self.directory,
+                "MM_FORCES is identically zero, which is what the "
+                "unimplemented back-reaction looked like.",
+            )
+        return forces
+
     def _check_plugin_fired(self) -> None:
         """Verify that the plugin actually ran.
 
@@ -349,6 +395,13 @@ class VaspPotential(VaspInterface, AtomicPotential):
         forces = np.zeros(self.system.positions.shape)
         qm_indices = sorted(self.system.select("subsystem I"))
         forces[qm_indices, :] = qm_forces
+        if self.embedding:
+            # Subsystem III is deliberately left at zero: under direct
+            # QM/MM/PME its force from the QM region is the "Y = MM"
+            # term, which OpenMM supplies from the static forcefield
+            # charges.  See John et al., JCP 161, 034103 (2024), Table I.
+            embed_indices = sorted(self.system.select("subsystem II"))
+            forces[embed_indices, :] = self._read_mm_forces()
         return forces
 
     def compute_components(self) -> dict[str, float]:
