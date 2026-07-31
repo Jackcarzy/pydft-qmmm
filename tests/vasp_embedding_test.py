@@ -573,3 +573,48 @@ class TestThirdLaw:
         # spreading disagree on sigma or cutoff -- check that sigma is
         # read from MM_CHARGES in both, not hardcoded.
         assert np.abs(total).max() < 0.01 * scale
+
+
+@requires_vasp
+class TestMMFiniteDifference:
+    """The strong per-atom check: is the MM force the energy's gradient?
+
+    Newton's third law can hold while both sides are wrong by the same
+    amount.  This pins the magnitude against a numerical derivative of
+    the energy, one MM atom at a time.  Seven VASP launches.
+    """
+
+    def test_mm_force_matches_the_numerical_gradient(
+            self, vasp_qmmm_system, vasp_workdir, vasp_pp_library,
+    ):
+        from pydft_qmmm.calculators import PotentialCalculator
+        from pydft_qmmm.utils import numerical_gradient
+        target = sorted(vasp_qmmm_system.select("subsystem II"))[0]
+        potential = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(vasp_workdir / "vasp"),
+            pp_path=vasp_pp_library,
+            embedding=True,
+            # ISTART=0 on every evaluation.  The interface normally
+            # restarts from the previous WAVECAR, which is right for MD
+            # but poisons a finite difference: only the x pair ends up
+            # with mismatched restart histories, and that showed up in
+            # Milestone 2 as x off by -3.43 kJ/mol/A while y and z
+            # agreed to 0.03.  It cost three GPU jobs to diagnose.
+            incar={"ENCUT": 250, "EDIFF": 1e-7, "ISTART": 0},
+        )
+        calculator = PotentialCalculator(vasp_qmmm_system, potential)
+        analytical = calculator.calculate().forces[target]
+        numerical = -numerical_gradient(
+            calculator, frozenset({target}), dist=1e-3,
+        )[0]
+        print(f"\n  MM atom index: {target}")
+        print(f"  analytical   : {analytical}")
+        print(f"  numerical    : {numerical}")
+        print(f"  residual     : {analytical - numerical}")
+        # Do NOT tune this tolerance if it fails.  Compare the residual
+        # against Milestone 2's unembedded control, which agreed to
+        # 0.03 kJ/mol/A: a residual of that order is the interface's own
+        # noise floor, while one comparable to the force itself is a
+        # real defect in the contraction.
+        assert analytical == pytest.approx(numerical, abs=1.0)
