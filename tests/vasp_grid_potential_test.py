@@ -353,6 +353,11 @@ def _constants(shape, cell, positions=None, zval=11.0):
         charge_density=np.full(shape, 8.0),
         hartree_potential=None,
         ion_potential=None,
+        # VASP's own ionic forces as they stand when the callback runs,
+        # i.e. BEFORE it subtracts the mean force from every ion.  The
+        # plugin needs them to reconstruct the net force that
+        # subtraction destroys.
+        forces=np.zeros((len(positions), 3)),
     )
 
 

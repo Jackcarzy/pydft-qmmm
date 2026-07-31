@@ -259,6 +259,66 @@ class TestMMForceReturn:
             vasp_embedded._read_mm_forces()
 
 
+class TestNetForceRestoration:
+    """VASP removes the net force on the QM ions; we put it back.
+
+    VASP subtracts the mean force from every ion, which is right for an
+    isolated periodic cell and wrong under embedding: V_ext breaks
+    translational invariance, and the net force is precisely the
+    momentum the MM subsystem transfers to the QM one.  Measured on job
+    11580378, VASP reported sum(F_QM) = 0 to machine precision while the
+    true net was (9.90, -37.70, 29.28) kJ/mol/A.
+    """
+
+    def test_reads_the_net_force_and_converts_units(self, vasp_embedded):
+        os.makedirs(vasp_embedded.directory, exist_ok=True)
+        path = os.path.join(vasp_embedded.directory, "QM_NET_FORCE")
+        with open(path, "w") as fh:
+            # The plugin writes eV/Angstrom, VASP's own unit.
+            fh.write("3\n")
+            fh.write("1.025624600000e-01 -3.907679200000e-01 "
+                     "3.034367400000e-01\n")
+            fh.write("# vasp_own  0 0 0\n")
+        got = vasp_embedded._read_qm_net_force()
+        # The real values from job 11580378, in kJ/mol/A.
+        assert got == pytest.approx([9.8958, -37.7034, 29.2772], abs=1e-3)
+
+    def test_missing_file_raises(self, vasp_embedded):
+        os.makedirs(vasp_embedded.directory, exist_ok=True)
+        path = os.path.join(vasp_embedded.directory, "QM_NET_FORCE")
+        if os.path.isfile(path):
+            os.remove(path)
+        with pytest.raises(
+                vasp_utils.VaspExecutionError, match="QM_NET_FORCE",
+        ):
+            vasp_embedded._read_qm_net_force()
+
+    def test_net_is_spread_evenly_over_the_qm_atoms(
+            self, vasp_embedded, monkeypatch,
+    ):
+        qm = sorted(vasp_embedded.system.select("subsystem I"))
+        near = sorted(vasp_embedded.system.select("subsystem II"))
+        qm_rows = np.zeros((len(qm), 3))
+        net = np.array([9.0, -36.0, 27.0])
+        monkeypatch.setattr(vasp_embedded, "_run", lambda: (0.0, qm_rows))
+        monkeypatch.setattr(
+            vasp_embedded, "_read_mm_forces",
+            lambda: np.full((len(near), 3), 1.0),
+        )
+        monkeypatch.setattr(
+            vasp_embedded, "_read_qm_net_force", lambda: net,
+        )
+
+        forces = vasp_embedded.compute_forces()
+
+        # VASP returned zero for every QM atom, so whatever appears on
+        # the QM rows is the restoration and nothing else.
+        assert forces[qm].sum(axis=0) == pytest.approx(net)
+        assert forces[qm] == pytest.approx(
+            np.tile(net / len(qm), (len(qm), 1)),
+        )
+
+
 class TestSubsystemIIIIsLeftToOpenMM:
     """Direct QM/MM/PME assigns subsystem III's force to the MM level.
 
@@ -289,6 +349,12 @@ class TestSubsystemIIIIsLeftToOpenMM:
         monkeypatch.setattr(potential, "_run", lambda: (0.0, qm_rows))
         monkeypatch.setattr(
             potential, "_read_mm_forces", lambda: near_rows,
+        )
+        # Zero net, so the restored force does not perturb the QM rows
+        # this test is checking.  The restoration itself is covered by
+        # TestNetForceRestoration.
+        monkeypatch.setattr(
+            potential, "_read_qm_net_force", lambda: np.zeros(3),
         )
 
         forces = potential.compute_forces()

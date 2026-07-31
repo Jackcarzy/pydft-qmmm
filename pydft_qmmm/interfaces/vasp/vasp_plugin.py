@@ -45,7 +45,8 @@ except ImportError:
     from grid_potential import spectral_value_and_gradient
 
 __all__ = [
-    "EPS0", "KJMOL_PER_EV", "CHARGE_FILE", "FORCE_FILE", "SENTINEL",
+    "EPS0", "KJMOL_PER_EV", "CHARGE_FILE", "FORCE_FILE",
+    "NET_FORCE_FILE", "SENTINEL",
     "ERROR_FILE",
     "build_external_potential", "contract_gaussian_gradient",
     "electron_interaction_energy", "electrostatic_potential_from_vasp",
@@ -56,6 +57,7 @@ __all__ = [
 
 CHARGE_FILE = "MM_CHARGES"
 FORCE_FILE = "MM_FORCES"
+NET_FORCE_FILE = "QM_NET_FORCE"
 SENTINEL = "PLUGIN_FIRED.txt"
 ERROR_FILE = "PLUGIN_ERROR.txt"
 PME_FILE = "PME_DATA"
@@ -256,7 +258,49 @@ def force_and_stress(constants, additions):
                 v_ext, cell, positions,
             )
             additions.total_energy += -float(np.sum(valence * potential))
-            additions.forces += valence[:, None] * gradient
+            nuclear = valence[:, None] * gradient
+            additions.forces += nuclear
+            # VASP DESTROYS the net force on the QM ions.  It subtracts
+            # the mean force from every ion, which is right for an
+            # isolated periodic cell -- there the total energy really is
+            # translationally invariant, so sum(F) must vanish -- but
+            # wrong here, because V_ext breaks that invariance and the
+            # net force IS the momentum the MM subsystem transfers to
+            # the QM one.
+            #
+            # Measured on job 11580378: sum(TOTAL-FORCE) in the OUTCAR
+            # is zero to machine precision, while VASP's own components
+            # sum to (3.007096, 12.736856, -3.088900) eV/A and this
+            # nuclear term sums to (-2.904534, -13.127624, 3.392337).
+            # Their sum, (0.1026, -0.3908, 0.3034) eV/A, matches
+            # -sum(F_MM) to 0.7% -- so the physics is right and only the
+            # reporting is lossy.
+            #
+            # constants.forces is VASP's own force array as it stands
+            # when the callback runs, i.e. before that subtraction, so
+            # the true net can be reconstructed here and nowhere else.
+            net = (
+                np.asarray(constants.forces, dtype=np.float64).sum(axis=0)
+                + nuclear.sum(axis=0)
+            )
+            with open(NET_FORCE_FILE, "w") as fh:
+                fh.write(f"{len(positions)}\n")
+                fh.write(f"{net[0]:.12e} {net[1]:.12e} {net[2]:.12e}\n")
+                # Recorded for diagnosis: if the driver's restored net
+                # ever disagrees with -sum(F_MM), these two lines say
+                # which half moved.
+                raw = np.asarray(constants.forces, dtype=np.float64)
+                fh.write(
+                    "# vasp_own  "
+                    f"{raw.sum(axis=0)[0]:.12e} {raw.sum(axis=0)[1]:.12e} "
+                    f"{raw.sum(axis=0)[2]:.12e}\n",
+                )
+                fh.write(
+                    "# nuclear   "
+                    f"{nuclear.sum(axis=0)[0]:.12e} "
+                    f"{nuclear.sum(axis=0)[1]:.12e} "
+                    f"{nuclear.sum(axis=0)[2]:.12e}\n",
+                )
         # The QM->MM back-reaction.  VASP's additions.forces is sized
         # 3 x number_ions, i.e. QM ions only -- the MM atoms do not
         # exist in VASP's calculation -- so these go back to the driver

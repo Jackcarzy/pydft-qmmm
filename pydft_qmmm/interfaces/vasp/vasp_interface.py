@@ -187,9 +187,10 @@ class VaspInterface(QMInterface):
             # run which dies before the plugin fires leaves a missing
             # file rather than the previous step's forces to be
             # silently reread.
-            force_path = os.path.join(self.directory, "MM_FORCES")
-            if os.path.isfile(force_path):
-                os.remove(force_path)
+            for stale in ("MM_FORCES", "QM_NET_FORCE"):
+                stale_path = os.path.join(self.directory, stale)
+                if os.path.isfile(stale_path):
+                    os.remove(stale_path)
         # Reuse the previous step's orbitals and density once they exist.
         if self.frame[0] and os.path.isfile(
                 os.path.join(self.directory, "WAVECAR"),
@@ -296,6 +297,41 @@ class VaspInterface(QMInterface):
             )
         return forces
 
+    def _read_qm_net_force(self) -> NDArray[np.float64]:
+        r"""Read the net force VASP removed from the QM ions.
+
+        VASP subtracts the mean force from every ion, which is correct
+        for an isolated periodic cell -- the total energy really is
+        translationally invariant there, so the net force must vanish --
+        but wrong under embedding, where ``V_ext`` breaks that
+        invariance and the net force is exactly the momentum the MM
+        subsystem transfers to the QM one.  Restoring it is what makes
+        Newton's third law hold across the two subsystems.
+
+        Returns:
+            The net force
+            (:math:`\mathrm{kJ\;mol^{-1}\;\mathring{A}^{-1}}`) on the QM
+            subsystem, which VASP's reported forces do not contain.
+
+        Raises:
+            VaspExecutionError: If the file is absent.
+        """
+        path = os.path.join(self.directory, "QM_NET_FORCE")
+        if not os.path.isfile(path):
+            raise vasp_utils.VaspExecutionError(
+                self.directory,
+                "QM_NET_FORCE is absent, so the net force VASP removed "
+                "from the QM ions cannot be restored and momentum will "
+                "not be conserved.",
+            )
+        with open(path) as fh:
+            fh.readline()
+            net = np.array(
+                [float(value) for value in fh.readline().split()],
+            )
+        # The plugin writes eV/Angstrom, VASP's own unit.
+        return net * KJMOL_PER_EV
+
     def _check_plugin_fired(self) -> None:
         """Verify that the plugin actually ran.
 
@@ -396,6 +432,13 @@ class VaspPotential(VaspInterface, AtomicPotential):
         qm_indices = sorted(self.system.select("subsystem I"))
         forces[qm_indices, :] = qm_forces
         if self.embedding:
+            # Restore the net force VASP removed.  It subtracts the mean
+            # force from every ion, so the QM subsystem comes back with
+            # zero net force no matter how hard the MM charges pull on
+            # it.  Spread the net back the same way it was taken.
+            forces[qm_indices, :] += (
+                self._read_qm_net_force() / len(qm_indices)
+            )
             # Subsystem III is deliberately left at zero: under direct
             # QM/MM/PME its force from the QM region is the "Y = MM"
             # term, which OpenMM supplies from the static forcefield
