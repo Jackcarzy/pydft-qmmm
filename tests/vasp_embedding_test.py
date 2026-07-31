@@ -95,6 +95,17 @@ class TestInterfaceWiring:
         _, charges, _, _ = vasp_plugin.read_mm_charges(path)
         assert len(charges) == first
 
+    def test_stale_mm_forces_is_removed_before_launch(self, vasp_embedded):
+        # If a previous run wrote MM_FORCES and this one dies before the
+        # plugin fires, the driver must not silently reread the old
+        # step's forces.
+        os.makedirs(vasp_embedded.directory, exist_ok=True)
+        path = os.path.join(vasp_embedded.directory, "MM_FORCES")
+        with open(path, "w") as fh:
+            fh.write("1 0\n0.0 0.0 0.0\n")
+        vasp_embedded._write_input()
+        assert not os.path.isfile(path)
+
     def test_missing_sentinel_raises(self, vasp_embedded):
         with pytest.raises(Exception, match="sentinel|PLUGINS"):
             vasp_embedded._check_plugin_fired()

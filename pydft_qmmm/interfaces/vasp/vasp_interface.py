@@ -182,6 +182,14 @@ class VaspInterface(QMInterface):
                     os.path.join(os.path.dirname(__file__), name),
                     os.path.join(self.directory, name),
                 )
+            # The plugin writes MM_FORCES during the run, not this
+            # method.  Remove any stale copy before launching so that a
+            # run which dies before the plugin fires leaves a missing
+            # file rather than the previous step's forces to be
+            # silently reread.
+            force_path = os.path.join(self.directory, "MM_FORCES")
+            if os.path.isfile(force_path):
+                os.remove(force_path)
         # Reuse the previous step's orbitals and density once they exist.
         if self.frame[0] and os.path.isfile(
                 os.path.join(self.directory, "WAVECAR"),

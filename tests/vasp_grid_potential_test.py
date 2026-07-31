@@ -992,6 +992,6 @@ class TestMMForceHandoff:
         constants = _constants(SHAPE, CELL)
         additions = _additions(SHAPE)
         vasp_plugin.local_potential(constants, additions)
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="hartree_potential"):
             vasp_plugin.force_and_stress(constants, additions)
         assert (tmp_path / vasp_plugin.ERROR_FILE).exists()
