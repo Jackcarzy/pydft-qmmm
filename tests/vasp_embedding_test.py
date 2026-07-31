@@ -684,3 +684,39 @@ class TestMMFiniteDifference:
         # noise floor, while one comparable to the force itself is a
         # real defect in the contraction.
         assert analytical == pytest.approx(numerical, abs=1.0)
+
+
+class TestSymmetryGuard:
+
+    def test_isym_greater_than_zero_is_rejected_under_embedding(
+            self, vasp_qmmm_system, vasp_workdir,
+    ):
+        # FORSYM runs between the plugin callback (force.F:1811) and the
+        # drift removal (force.F:1827), so symmetrizing there would make
+        # the net force recorded in QM_NET_FORCE stale and the
+        # restoration would reinstate the wrong vector.
+        potential = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(vasp_workdir / "vasp"),
+            pp_path="unused",
+            embedding=True,
+            incar={"ISYM": 1},
+        )
+        with pytest.raises(ValueError, match="ISYM"):
+            potential._write_input()
+
+    def test_isym_is_allowed_without_embedding(
+            self, vasp_qmmm_system, vasp_workdir, vasp_pp_library,
+    ):
+        # Without embedding there is no plugin, no QM_NET_FORCE and no
+        # reason to forbid symmetry.
+        potential = vasp_interface_factory(
+            vasp_qmmm_system,
+            directory=str(vasp_workdir / "vasp"),
+            pp_path=vasp_pp_library,
+            embedding=False,
+            incar={"ISYM": 1},
+        )
+        potential._write_input()
+        with open(os.path.join(potential.directory, "INCAR")) as fh:
+            assert "ISYM = 1" in fh.read()

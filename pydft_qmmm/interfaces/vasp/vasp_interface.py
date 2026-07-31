@@ -136,6 +136,19 @@ class VaspInterface(QMInterface):
             The permutation mapping POSCAR order onto the sorted QM
             atom indices.
         """
+        if self.embedding and int(self.incar.get("ISYM", 0)) > 0:
+            raise ValueError(
+                "ISYM must be 0 under electrostatic embedding.  Two "
+                "reasons, either of which is disqualifying.  The MM "
+                "charges break whatever symmetry VASP detects from the "
+                "QM atoms alone, so FORSYM would symmetrize the forces "
+                "over operations the real system does not have.  And "
+                "FORSYM runs between the plugin callback (force.F:1811) "
+                "and the drift removal (force.F:1827), so it would "
+                "invalidate the net force recorded in QM_NET_FORCE and "
+                "the restoration would silently reinstate the wrong "
+                "vector.",
+            )
         os.makedirs(self.directory, exist_ok=True)
         qm_indices = sorted(self.system.select("subsystem I"))
         symbols = [str(self.system.elements[i]) for i in qm_indices]
