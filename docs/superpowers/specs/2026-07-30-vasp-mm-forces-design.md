@@ -193,6 +193,62 @@ nothing, so the sum must be taken over **subsystem I + II only**. Including III
 would show a violation that is expected rather than a bug — the same trap as
 M2's empty-subsystem-III fixture.
 
+## Discovered during implementation: VASP destroys the net force
+
+Not anticipated by this design, found by job 11580378 failing the third-law
+test with a 40% violation, and load-bearing for anything built on top.
+
+`force.F` calls the plugin and then removes the drift:
+
+```fortran
+CALL PLUGINS_FORCE_AND_STRESS(..., TIFOR, ...)      ! :1811
+...
+IF (DYN%IBRION/=0 .OR. LCOMPAT) THEN
+   IF (LREMOVE_DRIFT) CALL SYMVEC(T_INFO%NIONS,TIFOR)   ! :1827
+ENDIF
+```
+
+`SYMVEC` (`dyna.F:257`) subtracts the mean force from every ion. That is right
+for an isolated periodic cell, where the total energy really is translationally
+invariant so `Σ F` must vanish — and wrong under embedding, where `V_ext` breaks
+that invariance and the net force **is** the momentum the MM subsystem transfers
+to the QM one.
+
+`LREMOVE_DRIFT` is a hardcoded call-site argument, **not an INCAR tag**, so it
+cannot be switched off from input; and `IBRION = -1` satisfies the outer gate,
+so the removal always runs for these single points. Because the callback
+receives `TIFOR` *before* `SYMVEC`, the plugin is the only place the true net
+can be reconstructed: `sum(constants.forces) + sum(nuclear term)`, written to
+`QM_NET_FORCE` and spread back over the QM atoms by the driver.
+
+**`SYMVEC` exempts the single-atom case** — `IF (NIONS==1) RETURN`. This is why
+the problem hid for so long:
+
+| test | QM atoms | net force |
+|---|---|---|
+| M2 Figure 2b, H in a constant field | 1 | preserved |
+| M2 gradient test, one QM water | 3 | destroyed |
+| M3 third law, one QM water | 3 | destroyed |
+
+Milestone 2's headline validation ran on the single geometry in the suite that
+is immune, so it gave no warning about the multi-atom case.
+
+This also explains **M2's unexplained ~16 kJ/mol/Å gradient residual**: `SYMVEC`
+subtracts the same vector from every atom, so relative forces survive and only
+the centre-of-mass component is lost — an error of `|net|/N` per atom, which
+here is `|(9.90, -37.70, 29.28)|/3 = 16.3 kJ/mol/Å`.
+
+Measured, job 11580631, in eV/A:
+
+```
+sum(VASP's own components) = ( 3.007096150151, 12.73685590952, -3.088900111545)
+sum(nuclear term)          = (-2.904533542613,-13.12762391728,  3.392336744396)
+true net                   = ( 0.102562,       -0.390768,        0.303437)
+```
+
+against `-sum(F_MM) = (0.102481, -0.387915, 0.302087)` — the third law holds to
+0.28% once the net is restored, against 40% before.
+
 ## Open questions
 
 1. **Does `ion_potential` need a sign or pseudization correction at MM
