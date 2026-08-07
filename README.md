@@ -23,6 +23,8 @@ PyDFT-QMMM: A Modular Framework for DFT-QM/MM Simulation
 
 </p>
 
+(modified by Chengyuan for mechanical embedding for SPARC)
+
 Introduction
 ------------
 
