@@ -116,7 +116,7 @@ class QMMMHamiltonian(CouplingHamiltonian):
             pme_spline_order: int | None = None,
     ) -> None:
         if (close_range, long_range) not in _SUPPORTED_EMBEDDING:
-            raise TypeError  # Todo: Make this informative.
+            raise TypeError
         # Every Hamiltonian must own its inner mappings.  A shallow copy
         # would leave them shared with the module template and with other
         # instances, so configuring one Hamiltonian would mutate all of
@@ -125,11 +125,8 @@ class QMMMHamiltonian(CouplingHamiltonian):
             subsystem: interactions.copy()
             for subsystem, interactions in _DEFAULT_FORCE_MATRIX.items()
         }
-        # A constructed object cannot be used as a function default:
-        # QMMMHamiltonian.modify_calculator mutates its cutoff and plugin
-        # registration adds calculator state.  Build a fresh default for
-        # each Hamiltonian while preserving partition=None as the public
-        # way to disable dynamic partitioning.
+        # Build a fresh default for each Hamiltonian while preserving
+        # partition=None as the public way to disable dynamic partitioning.
         if partition is _DEFAULT_PARTITION:
             self.partition: PartitionPlugin | None = CentroidPartition(
                 "all", 14.,
@@ -218,24 +215,35 @@ class QMMMHamiltonian(CouplingHamiltonian):
                     ),
                     RuntimeWarning,
                 )
-            pme_nuclei = PMENuclearPotential(
-                system,
-                self.pme_alpha,
-                self.pme_gridnumber,
-                self.pme_spline_order,
-            )
             pme_exclusion = PMEExcludedPotential(
                 system,
                 pme_alpha,
                 pme_gridnumber,
                 pme_spline_order,
             )
-            calculator.calculators.extend(
-                [
+            pme_calculators = []
+            # The nuclear term is not universal.  An interface that
+            # applies the electronic potential to its own nuclei -- VASP,
+            # whose plugin adds -sum(ZVAL * V_ext) in force_and_stress --
+            # has already accounted for it, and adding this potential on
+            # top counts the QM nuclei in the reciprocal field twice.
+            if qm_interface is None or not (
+                qm_interface.applies_nuclear_potential()
+            ):
+                pme_nuclei = PMENuclearPotential(
+                    system,
+                    self.pme_alpha,
+                    self.pme_gridnumber,
+                    self.pme_spline_order,
+                )
+                pme_calculators.append(
                     PotentialCalculator(system, pme_nuclei),
-                    PotentialCalculator(system, pme_exclusion),
-                ],
-            )
+                )
+            # PMEExcludedPotential corrects the MM side and is required
+            # whatever the QM engine does: OpenMM keeps the QM atoms'
+            # forcefield charges in its own reciprocal sum.
+            pme_calculators.append(PotentialCalculator(system, pme_exclusion))
+            calculator.calculators.extend(pme_calculators)
             pme_electrons = PMEElectronicPotential(
                 system,
                 self.pme_alpha,

@@ -2,6 +2,8 @@
 """
 from __future__ import annotations
 
+__author__ = "Chengyuan Shao"
+
 from pydft_qmmm.utils import TheoryLevel
 from .vasp_factory import vasp_interface_factory as FACTORY
 

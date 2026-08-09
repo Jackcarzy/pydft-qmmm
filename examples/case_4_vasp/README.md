@@ -3,69 +3,59 @@ Example Case 4 (VASP)
 
 Summary
 -------
-A small QM/MM mechanical-embedding demo using VASP for the QM region.
-The system is a 4-water cluster in a 12 A periodic box.  The first
-water (atoms 0-2) is treated by VASP at the PBE level; the remaining
-three waters (atoms 3-11) are MM under SPC/E.  Coupling uses
-``QMMMHamiltonian("mechanical", "mechanical")`` -- VASP sees only the QM
-atoms; QM/MM coupling is the MM force field acting between QM and MM
-atoms.
-
-This mirrors ``case_3_sparc`` and ``case_3_psi4`` (in the sibling
-pydft-qmmm checkout) on the same 4-water system, so the three QM engines
-can be compared directly.
-
-Note: the VASP interface currently supports mechanical embedding only.
-Electrostatic embedding (adding the MM electrostatic potential to the
-Kohn-Sham Hamiltonian via ``V_ext``) requires a VASP binary compiled
-with ``-DPLUGINS`` and is not yet wired up; requesting an electrostatic
-scheme raises ``NotImplementedError``.
-
-How the interface works
------------------------
-PyDFT-QMMM drives the dynamics.  Each energy/force evaluation:
-
-1. writes ``POSCAR`` (Cartesian, species-grouped), ``POTCAR`` (species
-   concatenated from the library), ``KPOINTS`` (Gamma mesh), and
-   ``INCAR`` (single point, ``NSW=0``, ``IBRION=-1``) into the working
-   directory;
-2. launches VASP as a subprocess;
-3. parses ``vasprun.xml`` for the free energy and forces, converts
-   eV -> kJ/mol and eV/A -> kJ/mol/A, and un-scrambles the forces back
-   into system order.
-
-``WAVECAR`` and ``CHGCAR`` from one step seed the next (``ISTART=1``),
-so the sequence of single points behaves like a continued SCF.
-
-Requirements
-------------
-- A VASP executable reachable by the ``command`` keyword (default
-  ``vasp_std``, overridable via ``PYDFT_QMMM_VASP_COMMAND`` or
-  ``ASE_VASP_COMMAND``).
-- A POTCAR library given by ``pp_path`` or ``VASP_PP_PATH``, holding
-  per-species subdirectories, e.g.
-  ``.../pseudopotential/potpaw_PBE.54``.  Use ``potcar_map`` to select
-  non-default potentials, e.g. ``potcar_map={"Li": "Li_sv"}``.
+This case serves as an example of electrostatic embedding with VASP as
+the QM engine.  The system under study is a QM water molecule in a box
+of 122 MM waters modeled by the SPC/E forcefield, in a 15.636 Angstrom
+periodic box.  The QM/MM/PME algorithm is applied, where waters whose
+centroid lies within 3.0 Angstroms of the QM region reach the QM
+electrons through a near field rebuilt from their real positions on
+VASP's own FFT grid, and everything beyond reaches it through the
+particle-mesh Ewald reciprocal sum.  The QM positions are centered in
+the box and the remaining residues wrapped around them beforehand.  A
+single energy is computed rather than a trajectory.  All files needed to
+run this case are in this case directory.  Running this case requires a
+VASP executable compiled with `-DPLUGINS`, a POTCAR library, and a
+Python environment holding both `numpy` and `helpme_py` for VASP's
+embedded interpreter to import.
 
 How to Run
 ----------
+The script can be run with the following command, where `VASP_PP_PATH`
+points at a POTCAR library holding per-species subdirectories and
+`PYTHONHOME` points at the environment VASP should import the plugin
+from:
+
 ```bash
-export VASP_PP_PATH=/path/to/potpaw_PBE.54
+export VASP_PP_PATH=/path/to/potpaw_PBE.64
+export PYTHONHOME=/path/to/conda/env
 export PYDFT_QMMM_VASP_COMMAND="mpirun -np 1 vasp_std"   # or "srun vasp_std"
-python case_4_vasp_api.py
+python run.py
 ```
 
-On a Slurm GPU cluster, run it from a batch script that loads the VASP
-module first; see ``../../../test/submit_interface.slurm`` in this
-repository for a single-point template.
+On a Slurm cluster, run it from a batch script that loads the VASP
+module first; `submit.slurm` in this directory is a working template,
+though the environment and executable paths in it are site-specific and
+must be edited.
 
 What to Expect
 --------------
-PyDFT-QMMM logs are written to ``./output_api/`` and VASP working files
-to ``./vasp_workdir/``.  At each step VASP is invoked once; energies and
-forces are combined with the SPC/E MM force field by the standard
-PyDFT-QMMM machinery.
+The energy of the system is printed to standard output, and the VASP
+input and output files will be written to the `./vasp_workdir/`
+subdirectory.  The plugin leaves a `PLUGIN_FIRED.txt` sentinel there
+recording the grid it used and the minimum of each half of the external
+potential; its absence means the embedding never ran, and the interface
+raises rather than returning an unembedded energy.  If a callback fails,
+the traceback is written to `PLUGIN_ERROR.txt` in the same directory.
 
-The VASP settings here (``ENCUT=500``, Gamma-only, ``EDIFF=1e-6``) are
-chosen for a fast demo, not for production accuracy.  Tighten the cutoff
-and k-point mesh as needed for real systems.
+Two settings are worth noting before adapting this case, as both fail
+quietly.  The external-potential grid is pinned with
+`NGXF/NGYF/NGZF = 108`, giving a 0.145 Angstrom spacing against which
+the `embedding_sigma = 0.3` Gaussians representing the MM point charges
+are comfortably resolved; a sigma below one grid spacing does not
+conserve the charge it deposits.  The coupling Hamiltonian's
+`pme_alpha = 0.5` is deliberately not the MM forcefield's
+`pme_alpha = 5.0`, because the QM/MM reciprocal sum is interpolated onto
+VASP's grid and that is only valid while the PME grid resolves the
+1/alpha length scale.  Symmetry must be switched off, and requesting
+embedding with `ISYM > 0` raises `ValueError`.  The VASP settings here
+are chosen for a fast example rather than for production accuracy.

@@ -2,10 +2,8 @@
 
 Attributes:
     DEFAULT_INCAR: INCAR tags applied to every calculation unless the
-        user overrides them.  These are chosen for a QM/MM single point:
-        symmetry is switched off because the MM environment breaks the
-        symmetry of the QM subsystem and because symmetrized forces
-        would be inconsistent with the MM forces they are added to, and
+        user overrides them. Symmetry is switched off because the MM
+        environment breaks the symmetry of the QM subsystem. And
         the wavefunction and charge density are written so that the next
         step can restart from them.
 """
@@ -86,7 +84,10 @@ def vasp_interface_factory(
             charges on VASP's FFT grid.  A point charge cannot be
             represented exactly on a finite grid, so it is smeared.
             Should comfortably exceed the grid spacing: too small
-            aliases, too large over-softens the near field.
+            aliases, too large over-softens the near field.  The
+            default is ~2x the grid spacing of a typical run; below one
+            spacing the deposited charge stops being conserved and
+            starts depending on where the atom sits between nodes.
         options: Additional INCAR tags given as keyword arguments; the
             names are upper-cased, so ``encut=520`` sets ``ENCUT``.
             These take precedence over ``incar``.
@@ -97,9 +98,8 @@ def vasp_interface_factory(
     if charge:
         raise NotImplementedError(
             "VASP has no molecular-charge keyword; a charged QM region "
-            "requires setting NELECT explicitly together with a "
-            "compensating background charge correction.  Only charge=0 "
-            "is supported by the VASP interface.",
+            "requires setting NELECT together with a compensating "
+            "background.  Only charge=0 is supported.",
         )
     if command is None:
         command = os.environ.get(
@@ -112,8 +112,7 @@ def vasp_interface_factory(
         raise ValueError(
             "No POTCAR library was given.  Set the pp_path keyword or "
             "the VASP_PP_PATH environment variable to the directory "
-            "holding per-species POTCAR subdirectories, e.g. "
-            "'.../pseudopotential/potpaw_PBE.54'.",
+            "holding per-species POTCAR subdirectories.",
         )
     if embedding_sigma <= 0.0:
         raise ValueError(

@@ -171,6 +171,13 @@ class QMInterface(SoftwareInterface):
         """
         pass
 
+    def applies_nuclear_potential(self) -> bool:
+        """
+        Returns:
+            Whether the nuclear term is the interface's responsibility.
+        """
+        return False
+
     @abstractmethod
     def add_electronic_potential(self, potential: ElectronicPotential) -> None:
         """Add an electronic potential to apply before calculations.

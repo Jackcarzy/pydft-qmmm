@@ -1,32 +1,29 @@
 """PME external potential, evaluated inside VASP's interpreter.
 
-Kept apart from grid_potential deliberately.  grid_potential must stay
-importable with numpy alone, because that is what lets the cutoff-scheme
-physics be unit tested with no VASP present.  This module needs
-helpme_py, so it is imported only when the PME path is actually active.
+This module needs helpme_py.
 
-Why the evaluation happens here rather than in the driver: helPME can
-report the potential at ARBITRARY coordinates, so the natural evaluation
-points are VASP's own FFT grid.  That grid is chosen by VASP from ENCUT,
-PREC and the cell, and is only known once VASP is running.  Computing it
-driver-side would mean pinning NGXF/NGYF/NGZF in the INCAR -- converting
-a quantity VASP derives correctly into one the user has to maintain, and
-one that silently goes wrong the moment PREC or ENCUT changes.
+helPME can report the potential at ARBITRARY coordinates, so the natural
+evaluation points are VASP's own FFT grid.  That grid is chosen by VASP from
+ENCUT, PREC and the cell, and is only known once VASP is running.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
-try:
-    from .grid_potential import EPS0  # noqa: F401
-except ImportError:  # VASP imports the plugin as a top-level module.
-    from grid_potential import EPS0  # noqa: F401
+from .grid_potential import EPS0  # noqa: F401
 
 # (kJ / mol) per eV, and helPME's Coulomb constant in kJ*A/mol/e**2.
 KJMOL_PER_EV = 96.48533212331
 COULOMB_CONSTANT = 1389.3545764438198
 
 PME_FILE = "PME_DATA"
+
+
+def _minimum_image():
+    """Whether exclusions use the nearest-image separation."""
+    return bool(os.environ.get("PYDFT_QMMM_PME_MINIMUM_IMAGE", "").strip())
 
 
 def read_pme_data(path, expect_step=None):
@@ -89,17 +86,7 @@ def grid_coordinates(shape, cell):
 def build_pme_potential(path, shape, cell, expect_step=None, chunk=1 << 20):
     """Build V_ext on VASP's grid from the PME reciprocal-space sum.
 
-    Mirrors PMEElectronicPotential.compute_potential: a reciprocal-space
-    sum over every charge, then a real-space adjustment that removes the
-    contributions which must not act on the QM electrons.
-
-    The result is converted to VASP's convention -- electron potential
-    ENERGY in eV, i.e. the negative of the electrostatic potential --
-    rather than the Hartree that the Psi4 path uses.
-
-    Grid points are evaluated in chunks: a 320**3 grid is 33 million
-    coordinates, and handing helPME one array that size would allocate
-    several gigabytes of intermediates at once.
+    Mirrors PMEElectronicPotential.compute_potential.
 
     Args:
         path: The PME_DATA file written by the interface.
@@ -136,7 +123,8 @@ def build_pme_potential(path, shape, cell, expect_step=None, chunk=1 << 20):
         pme.compute_P_rec(0, all_charges, all_positions,
                           helpme_py.MatrixD(block), 0, matrix)
         pme.compute_P_adj(0, excluded_charges, excluded_positions,
-                          helpme_py.MatrixD(block), matrix, False)
+                          helpme_py.MatrixD(block), matrix,
+                          _minimum_image())
         potential[start:start + chunk] = values[:, 0]
     # helPME reports the electrostatic potential in kJ/mol/e; VASP wants
     # the electron potential ENERGY in eV, hence the negation.

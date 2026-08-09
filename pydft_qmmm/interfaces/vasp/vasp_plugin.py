@@ -1,13 +1,6 @@
 """External-potential plugin for VASP QM/MM electrostatic embedding.
 
-VASP imports this module and calls into it; never run it directly.  The
-interface copies this file, together with grid_potential.py, into each
-run directory, where VASP's embedded interpreter picks it up as
-``vasp_plugin``.
-
-Only the callbacks and their caching live here.  The physics is in
-grid_potential, which is deliberately free of any dependency beyond
-numpy so that it can be exercised without VASP present.
+VASP imports this module and calls into it; never run it directly.
 """
 from __future__ import annotations
 
@@ -17,32 +10,19 @@ import warnings
 
 import numpy as np
 
-try:
-    from .grid_potential import EPS0
-    from .grid_potential import KJMOL_PER_EV
-    from .grid_potential import build_external_potential
-    from .grid_potential import contract_gaussian_gradient
-    from .grid_potential import electron_interaction_energy
-    from .grid_potential import electrostatic_potential_from_vasp
-    from .grid_potential import gradient_at
-    from .grid_potential import interpolant_gradient_at
-    from .grid_potential import interpolate_at
-    from .grid_potential import read_mm_charges
-    from .grid_potential import spectral_value_and_gradient
-except ImportError:
-    # VASP copies this file into the run directory and imports it as a
-    # top-level module, where the package-relative form is unavailable.
-    from grid_potential import EPS0
-    from grid_potential import KJMOL_PER_EV
-    from grid_potential import build_external_potential
-    from grid_potential import contract_gaussian_gradient
-    from grid_potential import electron_interaction_energy
-    from grid_potential import electrostatic_potential_from_vasp
-    from grid_potential import gradient_at
-    from grid_potential import interpolant_gradient_at
-    from grid_potential import interpolate_at
-    from grid_potential import read_mm_charges
-    from grid_potential import spectral_value_and_gradient
+from .grid_potential import EPS0
+from .grid_potential import KJMOL_PER_EV
+from .grid_potential import build_external_potential
+from .grid_potential import contract_gaussian_gradient
+from .grid_potential import electron_interaction_energy
+from .grid_potential import electrostatic_potential_from_vasp
+from .grid_potential import erfc_potential
+from .grid_potential import gradient_at
+from .grid_potential import interpolant_gradient_at
+from .grid_potential import interpolate_at
+from .grid_potential import interpolate_onto_grid
+from .grid_potential import read_mm_charges
+from .grid_potential import spectral_value_and_gradient
 
 __all__ = [
     "EPS0", "KJMOL_PER_EV", "CHARGE_FILE", "FORCE_FILE",
@@ -50,7 +30,9 @@ __all__ = [
     "ERROR_FILE",
     "build_external_potential", "contract_gaussian_gradient",
     "electron_interaction_energy", "electrostatic_potential_from_vasp",
+    "erfc_potential", "erfc_near_enabled",
     "gradient_at", "interpolant_gradient_at", "interpolate_at",
+    "interpolate_onto_grid",
     "read_mm_charges", "spectral_value_and_gradient",
     "reset_cache", "local_potential", "force_and_stress",
 ]
@@ -62,12 +44,69 @@ SENTINEL = "PLUGIN_FIRED.txt"
 ERROR_FILE = "PLUGIN_ERROR.txt"
 PME_FILE = "PME_DATA"
 
+# Opt-in: build the analytic near field on an N**3 grid and interpolate
+# it onto VASP's.
+COARSE_NEAR_ENV = "PYDFT_QMMM_VASP_COARSE_NEAR"
+
+# Opt-in: reinstate the near field as the Ewald real-space correction.
+ERFC_NEAR_ENV = "PYDFT_QMMM_VASP_ERFC_NEAR"
+
 _CACHE = {}
 
 
-def reset_cache():
-    """Discard the cached external potential.  For tests."""
-    _CACHE.clear()
+def _coarse_near_gridnumber():
+    """The coarse grid to build v_near on, or None for the normal path.
+
+    Returns:
+        The requested grid number, or None if the variable is unset or
+        empty.
+
+    Raises:
+        ValueError: If the variable is set to something that is not a
+            positive integer.
+    """
+    raw = os.environ.get(COARSE_NEAR_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        gridnumber = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"{COARSE_NEAR_ENV}={raw!r} is not an integer",
+        ) from None
+    if gridnumber < 1:
+        raise ValueError(f"{COARSE_NEAR_ENV}={raw!r} must be positive")
+    return gridnumber
+
+
+def erfc_near_enabled():
+    """Whether the real-space route is selected.
+
+    Read on every call rather than cached at import, and shared with the
+    driver, so that one variable cannot switch the two halves apart.
+    """
+    return bool(os.environ.get(ERFC_NEAR_ENV, "").strip())
+
+
+def _near_potential(positions, charges, shape, cell, sigma):
+    """v_near on VASP's grid, by whichever route is selected.
+
+    Returns:
+        The potential on `shape`, and a label describing the route for
+        the sentinel file.
+    """
+    gridnumber = _coarse_near_gridnumber()
+    if gridnumber is None:
+        return build_external_potential(
+            positions, charges, shape, cell, sigma,
+        ), "direct"
+    coarse = build_external_potential(
+        positions, charges, (gridnumber,) * 3, cell, sigma,
+    )
+    return (
+        interpolate_onto_grid(coarse, shape),
+        f"coarse {gridnumber}**3 -> trilinear",
+    )
 
 
 def _record_error(exc):
@@ -75,9 +114,7 @@ def _record_error(exc):
 
     VASP wraps the callback in a bare ``except`` (see
     ``src/plugins/src/vasp/_apply_interface.py``) and turns any
-    exception into a PYTHON_EXCEPTION return code.  It does abort, but
-    the traceback goes to stdout where it is easily lost among VASP's
-    own output, so write it somewhere findable first.
+    exception into a PYTHON_EXCEPTION return code.
     """
     with open(ERROR_FILE, "w") as fh:
         fh.write("".join(traceback.format_exception(exc)))
@@ -97,30 +134,32 @@ def _external_potential(constants):
         return _CACHE["v_ext"]
     if os.path.isfile(PME_FILE):
         # PME path: the driver shipped the whole system and the Ewald
-        # parameters, and helPME evaluates on VASP's own grid.  Imported
-        # lazily so the cutoff path keeps working without helpme_py.
-        try:
-            from .pme_external import build_pme_potential
-        except ImportError:
-            from pme_external import build_pme_potential
+        # parameters, and helPME evaluates on VASP's own grid.
+        from .pme_external import build_pme_potential
         v_pme = build_pme_potential(PME_FILE, shape, cell)
         # PME alone is NOT the whole potential.  compute_P_adj removed
         # subsystems I and II from the reciprocal sum, so the near field
-        # has to be put back explicitly -- Pederson & McDaniel, JCP 156,
-        # 174105 (2022), approach "2": exclusions (Eq. 12) PLUS analytic
-        # embedding (Eq. 15).  Returning v_pme on its own drops the
-        # dominant near-field term: it gave min V_ext = -2.6 eV where
-        # the cutoff scheme gives -11.0 eV for the same system.
+        # has to be put back explicitly.
         positions, charges, _, sigma = read_mm_charges(CHARGE_FILE)
-        v_near = build_external_potential(
-            positions, charges, shape, cell, sigma,
-        )
+        if erfc_near_enabled():
+            # alpha must be the one the reciprocal sum used, or the two
+            # halves do not add up to 1/r.  Take it from the same file
+            # build_pme_potential read rather than from a second source.
+            from .pme_external import read_pme_data
+            alpha = read_pme_data(PME_FILE)[3]
+            v_near = erfc_potential(positions, charges, shape, cell, alpha)
+            near_route = f"erfc real-space, alpha = {alpha:.4f} 1/A"
+        else:
+            v_near, near_route = _near_potential(
+                positions, charges, shape, cell, sigma,
+            )
         v_ext = v_pme + v_near
         _CACHE["shape"] = shape
         _CACHE["v_ext"] = v_ext
         with open(SENTINEL, "w") as fh:
             fh.write("local_potential callback executed (PME + analytic)\n")
             fh.write(f"shape_grid   = {shape}\n")
+            fh.write(f"near route   = {near_route}\n")
             fh.write(f"near charges = {len(charges)}\n")
             fh.write(f"min V_pme eV = {float(v_pme.min()):.6f}\n")
             fh.write(f"min V_near eV= {float(v_near.min()):.6f}\n")
@@ -130,9 +169,7 @@ def _external_potential(constants):
     net_charge = float(np.sum(charges)) if len(charges) else 0.0
     if abs(net_charge) > 1e-6:
         # The G=0 term is dropped in the Poisson solve, which is
-        # equivalent to a uniform neutralizing background.  Absolute
-        # energies then carry a constant offset; differences at fixed
-        # composition do not.
+        # equivalent to a uniform neutralizing background.
         warnings.warn(
             f"subsystem II carries a net charge of {net_charge:.4f} e.  "
             "Absolute embedded energies are shifted by a constant from "
@@ -140,12 +177,13 @@ def _external_potential(constants):
             RuntimeWarning,
             stacklevel=2,
         )
-    v_ext = build_external_potential(positions, charges, shape, cell, sigma)
+    v_ext, near_route = _near_potential(positions, charges, shape, cell, sigma)
     _CACHE["shape"] = shape
     _CACHE["v_ext"] = v_ext
     with open(SENTINEL, "w") as fh:
         fh.write("local_potential callback executed\n")
         fh.write(f"shape_grid   = {shape}\n")
+        fh.write(f"near route   = {near_route}\n")
         fh.write(f"mm_charges   = {len(charges)}\n")
         fh.write(f"net_charge   = {net_charge:.6f}\n")
         fh.write(f"sigma        = {sigma}\n")
@@ -171,24 +209,6 @@ def local_potential(constants, additions):
 
     Defines the PLUGINS/LOCAL_POTENTIAL interface.  Called once per SCF
     step.
-
-    additions.total_energy is deliberately LEFT ALONE.  MEASURED, not
-    assumed (jobs 11566990 and 11567275):
-
-        without an energy term  analytical - numerical = (14, 14, 5)
-        reporting int(rho V_ext) ->                      (-266, -985, 217)
-        the nuclear correction itself is                 (-272, -950, 205)
-
-    Adding the term shifted the result by very nearly the whole nuclear
-    correction, i.e. by the electronic response that almost cancels it.
-    So VASP's TOTEN ALREADY contains int(rho V_ext): the band-structure
-    energy picks it up once V_ext is added to the local potential, and
-    nothing subtracts it again.  E%EPLUGINS exists for energies VASP
-    cannot know about -- a field's self-energy, a constraint term --
-    not for this one.
-
-    This contradicts what the design document guessed, and is the reason
-    the Tier 2 test was written as a measurement rather than a check.
     """
     try:
         if getattr(constants, "hartree_potential", None) is not None:
@@ -210,44 +230,17 @@ def force_and_stress(constants, additions):
         dE_I = -Z_I V_ext(R_I)
         dF_I = +Z_I grad V_ext(R_I)
 
-    NOTE THE FORCE SIGN.  The force must be the negative gradient of the
-    energy it accompanies:
-
-        F = -grad(dE_I) = -grad(-Z_I V_ext) = +Z_I grad V_ext
-
-    Writing dF_I = -Z_I grad V_ext (as the manuscript's Eq. 4 appears to,
-    and as this project's spec originally did) is inconsistent with
-    Eq. 3 and flips every nuclear force.  Checked physically: for an MM
-    charge of +1 e and a pseudo-ion of +11 e two Angstrom away, V_ext is
-    negative and rising with r, so grad V_ext > 0 and the ion is pushed
-    away -- repulsion, as two positive charges must.  The
-    test_energy_and_force_corrections_are_consistent test finite
-    differences dE against dF to keep the two locked together.
-
     Z_I is the pseudopotential valence charge ZVAL, NOT the atomic
     number: VASP's nuclei are pseudo-ions carrying only valence charge,
     so the atomic number would over-count by the core electrons (79 vs
     11 for gold).
-
-    V_ext is interpolated from the same grid the electrons see, rather
-    than summed pairwise over MM charges.  A pairwise sum would be exact
-    but non-periodic, while the grid solve is periodic, and the two
-    halves of the QM subsystem must feel a consistent potential.
     """
     try:
         cell = np.asarray(constants.lattice_vectors, dtype=np.float64)
         shape = tuple(int(n) for n in constants.shape_grid)
         positions = np.asarray(constants.positions) @ cell
-        # This used to be "if len(positions) == 0: return", since with
-        # no QM ions there was nothing left to do.  Now there is: the
-        # MM back-reaction below must still run and refresh MM_FORCES
-        # every SCF step even when this subsystem carries zero QM
-        # atoms, so the empty-ion case skips only the nuclear terms
-        # rather than the whole callback.
         if len(positions) > 0:
             v_ext = _external_potential(constants)
-            # ion_types is already 0-indexed: adjust_indexing subtracts
-            # one from every IndexArray before the plugin sees it.
             valence = np.asarray(constants.ZVAL, dtype=np.float64)[
                 np.asarray(constants.ion_types, dtype=int)
             ]
@@ -260,25 +253,7 @@ def force_and_stress(constants, additions):
             additions.total_energy += -float(np.sum(valence * potential))
             nuclear = valence[:, None] * gradient
             additions.forces += nuclear
-            # VASP DESTROYS the net force on the QM ions.  It subtracts
-            # the mean force from every ion, which is right for an
-            # isolated periodic cell -- there the total energy really is
-            # translationally invariant, so sum(F) must vanish -- but
-            # wrong here, because V_ext breaks that invariance and the
-            # net force IS the momentum the MM subsystem transfers to
-            # the QM one.
-            #
-            # Measured on job 11580378: sum(TOTAL-FORCE) in the OUTCAR
-            # is zero to machine precision, while VASP's own components
-            # sum to (3.007096, 12.736856, -3.088900) eV/A and this
-            # nuclear term sums to (-2.904534, -13.127624, 3.392337).
-            # Their sum, (0.1026, -0.3908, 0.3034) eV/A, matches
-            # -sum(F_MM) to 0.7% -- so the physics is right and only the
-            # reporting is lossy.
-            #
-            # constants.forces is VASP's own force array as it stands
-            # when the callback runs, i.e. before that subtraction, so
-            # the true net can be reconstructed here and nowhere else.
+            # VASP DESTROYS the net force on the QM ions.
             net = (
                 np.asarray(constants.forces, dtype=np.float64).sum(axis=0)
                 + nuclear.sum(axis=0)
@@ -301,10 +276,7 @@ def force_and_stress(constants, additions):
                     f"{nuclear.sum(axis=0)[1]:.12e} "
                     f"{nuclear.sum(axis=0)[2]:.12e}\n",
                 )
-        # The QM->MM back-reaction.  VASP's additions.forces is sized
-        # 3 x number_ions, i.e. QM ions only -- the MM atoms do not
-        # exist in VASP's calculation -- so these go back to the driver
-        # through a file, the way the charges came in.
+        # The QM->MM back-reaction.
         phi_qm = electrostatic_potential_from_vasp(
             _CACHE.get("hartree"), _CACHE.get("ion"),
         )

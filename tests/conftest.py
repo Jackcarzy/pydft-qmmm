@@ -141,8 +141,7 @@ def vasp_qmmm_system(spce_system):
     # System.load() leaves every charge at zero -- charges are normally
     # assigned when an MM Hamiltonian builds its calculator.  Without
     # this the embedding tests build an IDENTICALLY ZERO V_ext and pass
-    # while testing no physics whatsoever, which is exactly how job
-    # 11566828 reported "min V_ext eV = -0.000000".  Values are the SPC/E
+    # while testing no physics whatsoever.  Values are the SPC/E
     # charges from tests/data/spce_no_lj.xml.
     charges = np.asarray(spce_system.charges)
     for atom, element in enumerate(spce_system.elements):
@@ -158,8 +157,7 @@ def vasp_three_subsystem_system(vasp_qmmm_system):
     The stock fixture assigns 3 atoms to subsystem I and 1149 to
     subsystem II, leaving subsystem III EMPTY.  That makes any assertion
     of the form "VASP contributes nothing to subsystem III" vacuously
-    true, since it ranges over a zero-length array -- the same way job
-    11566828 passed while testing no physics at all.  Demote the outer
+    true, since it ranges over a zero-length array.  Demote the outer
     half of subsystem II so such assertions have atoms to range over.
     """
     near = sorted(vasp_qmmm_system.select("subsystem II"))
@@ -191,7 +189,7 @@ def vasp_embedded(vasp_qmmm_system, vasp_workdir):
 
 @pytest.fixture
 def h_constant_field_system():
-    """The manuscript's Figure 2b system: H atom in a constant field.
+    """H atom in a constant field.
 
     One hydrogen at the centre of a 10 x 10 x 30 cell (subsystem I) and
     two oppositely charged sheets at z = 20 and z = 0 (subsystem II).

@@ -1,15 +1,7 @@
 """Grid physics for VASP QM/MM electrostatic embedding.
 
-Pure numpy.  This module must stay importable by the Python interpreter
-embedded inside VASP, so it may not import anything beyond numpy -- not
-scipy, and nothing from pydft_qmmm.  That restriction is what lets the
-physics here be unit tested with no VASP present, which is how the sign
-error in the nuclear force correction and the O(N*grid) charge spreading
-were both caught in milliseconds rather than in 22-minute GPU jobs.
-
-Split out of vasp_plugin.py once the embedding was validated end to end
-(manuscript Figure 2b: a neutral H atom in a constant field, corrected
-force 0.012 vs 5.820 kJ/mol/A uncorrected).
+Pure numpy. This module must stay importable by the Python interpreter
+embedded inside VASP.
 """
 from __future__ import annotations
 
@@ -88,14 +80,6 @@ def _gaussian_box(position, inverse, dimensions, cell, sigma, prefactor, offsets
     minimum-image convention, rather than relying on two hand-maintained
     copies staying in sync.
 
-    Everything that does not vary per charge -- inverse, dimensions,
-    prefactor and offsets -- is computed once by the caller and passed
-    in here unchanged; this function only does the per-charge geometry
-    (the box centre, the wrapped grid indices, and the minimum-imaged
-    displacement and kernel on that box).  Recomputing any of those
-    per-charge inputs inside this function would reintroduce the
-    O(N_charges * N_grid) cost the box was built to avoid.
-
     Args:
         position: A single Cartesian position (Angstrom).
         inverse: The inverse of `cell`, i.e. cell**-1.
@@ -136,17 +120,6 @@ def spread_gaussian(positions, charges, shape, cell, sigma, cutoff=6.0):
 
     A point charge cannot be represented on a finite FFT grid, so each
     is smeared with width sigma.
-
-    Only grid points within ``cutoff * sigma`` of a charge are touched.
-    Without that restriction the cost is O(N_charges * N_grid), which is
-    ruinous at production scale: 1149 MM charges on a 160**3 grid took
-    935 s per evaluation, versus well under a second here.  A 3D
-    Gaussian has about 7e-8 of its mass beyond 6 sigma, so the truncated
-    charge is conserved to roughly one part in 1e7.
-
-    Displacements are minimum-imaged in fractional coordinates, which is
-    exact for the nearest image and negligible in error while sigma is
-    small against the cell.
 
     Args:
         positions: An Nx3 array of positions (Angstrom).
@@ -202,10 +175,7 @@ def poisson_fft(rho, cell):
     """Solve the periodic Poisson equation by FFT.
 
     Solves del**2 phi = -rho / eps0.  In reciprocal space this is
-    phi_G = rho_G / (eps0 * |G|**2).  The G=0 term diverges for a
-    net-charged cell and is set to zero, which fixes the average
-    potential at zero -- equivalent to a uniform neutralizing
-    background, the same convention VASP uses for charged cells.
+    phi_G = rho_G / (eps0 * |G|**2).
 
     Args:
         rho: The charge density on the grid (e/Angstrom**3).
@@ -268,6 +238,107 @@ def interpolate_at(field, cell, points):
     return result
 
 
+def _erfc(x):
+    """Complementary error function, vectorized, numpy only.
+
+    math.erfc is exact but scalar, and this is called on tens of
+    millions of grid points at a time; scipy would do it properly but
+    this module has to stay importable inside VASP's interpreter, where
+    only numpy is available.
+    """
+    t = 1.0 / (1.0 + 0.3275911 * x)
+    poly = t * (
+        0.254829592 + t * (
+            -0.284496736 + t * (
+                1.421413741 + t * (-1.453152027 + t * 1.061405429)
+            )
+        )
+    )
+    return poly * np.exp(-x * x)
+
+
+def erfc_potential(positions, charges, shape, cell, alpha, chunk=1 << 14):
+    """Real-space Ewald correction on the grid: sum q erfc(alpha r) / r.
+
+    This is the OTHER way to reinstate the near field: subsystem II
+    stays in the reciprocal sum and this supplies the erfc complement,
+    rather than being excluded and rebuilt from Gaussians.
+
+    Args:
+        positions: An Nx3 array of charge positions (Angstrom).
+        charges: An N array of charges (e).
+        shape: The grid dimensions.
+        cell: A 3x3 array whose rows are lattice vectors (Angstrom).
+        alpha: The Ewald splitting parameter (1/Angstrom).  MUST be the
+            one the reciprocal sum used, or the two halves will not add
+            up to 1/r.
+        chunk: Grid points evaluated per pass.
+
+    Returns:
+        The correction as electron potential ENERGY (eV), the negative of
+        the electrostatic potential, matching build_external_potential.
+    """
+    shape = tuple(int(n) for n in shape)
+    total = int(np.prod(shape))
+    result = np.zeros(total, dtype=np.float64)
+    if len(charges) == 0:
+        return result.reshape(shape)
+    inverse = np.linalg.inv(cell)
+    fractional_charges = np.asarray(positions, dtype=np.float64) @ inverse
+    fractional_grid = _fractional_grid(shape).reshape(-1, 3)
+    charges = np.asarray(charges, dtype=np.float64)
+    # 1/(4*pi*eps0) = 14.3996 V*Angstrom/e, the same constant poisson_fft
+    # applies through EPS0, so the two routes share one convention.
+    coulomb = 1.0 / (4.0 * np.pi * EPS0)
+    for start in range(0, total, chunk):
+        block = fractional_grid[start:start + chunk]
+        delta = block[:, None, :] - fractional_charges[None, :, :]
+        delta -= np.round(delta)
+        cartesian = delta @ cell
+        distance = np.sqrt(
+            np.einsum("...k,...k->...", cartesian, cartesian),
+        )
+        # A grid point exactly on a charge is a measure-zero accident,
+        # but it would produce inf and take the SCF with it.  Clamping
+        # rather than skipping keeps the failure visible as a large
+        # finite value, which is the honest outcome to report.
+        np.maximum(distance, 1e-10, out=distance)
+        result[start:start + chunk] = (
+            charges * _erfc(alpha * distance) / distance
+        ).sum(axis=1)
+    return (-coulomb * result).reshape(shape)
+
+
+def interpolate_onto_grid(field, shape):
+    """Trilinearly interpolate a periodic grid field onto a COARSER or
+    FINER regular grid spanning the same cell.
+
+    Args:
+        field: A scalar field on the source grid.
+        shape: The number of target points along each axis, either an
+            int for a cubic target or a 3-sequence.
+
+    Returns:
+        The field on the target grid.
+    """
+    if np.isscalar(shape):
+        shape = (int(shape),) * 3
+    out = field
+    for axis in range(3):
+        source = out.shape[axis]
+        target = int(shape[axis])
+        scaled = (np.arange(target) / target) * source
+        lower = np.floor(scaled).astype(int)
+        weight = (scaled - lower).reshape(
+            [target if i == axis else 1 for i in range(3)],
+        )
+        out = (
+            np.take(out, lower % source, axis=axis) * (1.0 - weight)
+            + np.take(out, (lower + 1) % source, axis=axis) * weight
+        )
+    return out
+
+
 def spectral_value_and_gradient(field, cell, points):
     """Evaluate a periodic grid field and its gradient at points.
 
@@ -275,25 +346,6 @@ def spectral_value_and_gradient(field, cell, points):
 
         f(R)      = sum_G  fhat(G) exp(i G.R)
         grad f(R) = sum_G  i G fhat(G) exp(i G.R)
-
-    so the gradient is EXACTLY the derivative of the value -- which is
-    what molecular dynamics needs, and what neither of the alternatives
-    provides:
-
-      * interpolate_at + gradient_at mixes a trilinear value with a
-        spectral slope.  Measured cost: a reproducible 14 kJ/mol/A
-        finite-difference discrepancy (jobs 11566990, 11569337).
-      * interpolate_at + interpolant_gradient_at is self-consistent but
-        only C0, so at a grid node the slope is one-sided.  Measured
-        cost: a 2.0 kJ/mol/A transverse force where symmetry demands
-        zero.
-
-    The series is also exact for a band-limited field and correctly
-    periodic, unlike a minimum-image pairwise sum.
-
-    Evaluated separably: exp(i G.R) factorizes over the three lattice
-    directions, so this costs O(N_grid) work but only O(n) memory per
-    point rather than materializing a full complex grid per point.
 
     Args:
         field: A scalar field on the grid.
@@ -333,21 +385,14 @@ def spectral_value_and_gradient(field, cell, points):
 def interpolant_gradient_at(field, cell, points):
     """Analytic gradient OF THE TRILINEAR INTERPOLANT at points.
 
+    Dead in production.
+
     This is deliberately not the same as gradient_at.  gradient_at
     differentiates in reciprocal space, which is a better approximation
     to the true gradient of the underlying field but is NOT the
     derivative of the value interpolate_at returns -- trilinear
     interpolation is only C0, so its slope inside a cell differs from
     the spectral derivative by O(h).
-
-    For molecular dynamics the energy and the force must be exactly
-    consistent, or the integrator sees a non-conservative field.  Since
-    the nuclear energy correction uses interpolate_at, the matching
-    force must use this function.  Measured cost of getting that wrong:
-    a reproducible 14 kJ/mol/A discrepancy in the finite-difference
-    test (jobs 11566990 and 11569337, bit-identical), about 1.5% of the
-    nuclear correction but roughly half the NET force, because the
-    nuclear and electronic terms nearly cancel.
 
     Args:
         field: A scalar field on the grid.
@@ -384,6 +429,8 @@ def interpolant_gradient_at(field, cell, points):
 def gradient_at(field, cell, points):
     """Return the gradient of a periodic grid field at points.
 
+    Dead in production.
+
     The derivative is taken in reciprocal space, which is exact for a
     band-limited field, and the three components are then interpolated,
     so the gradient is consistent with interpolate_at.
@@ -412,19 +459,7 @@ def gradient_at(field, cell, points):
 def electron_interaction_energy(charge_density, v_ext):
     """Energy of the electrons in the external potential, in eV.
 
-    VASP normalizes its grid charge density so that
-
-        sum(charge_density) / N_grid == NELECT
-
-    (verified against a real run: 12881756160.000002 / 7741440 ==
-    1664.0).  The electron number density is therefore
-    n(r) = charge_density / V, and
-
-        integral n V_ext dV = sum(charge_density * V_ext) / N_grid
-
-    with no explicit cell volume: the V from n cancels the V from dV.
-    Multiplying by the volume, as an earlier draft did, overshoots by
-    ~2.7e4 for this cell.
+    Dead in production.
     """
     if charge_density is None:
         raise RuntimeError(
@@ -451,18 +486,6 @@ def contract_gaussian_gradient(
     contracts a potential against grad g_sigma over the same box:
 
         F_j = -q_j * integral( field(r) * grad_{r_j} g_sigma(r - r_j) dr )
-
-    Note grad_{r_j}, the derivative with respect to the CHARGE
-    position, not with respect to r.  The two differ by a sign and
-    reading it the wrong way inverts every MM force.
-
-    Using the SAME kernel and box is what makes Newton's third law hold
-    term by term rather than approximately: the force is differentiated
-    with respect to exactly the representation the QM density felt.
-
-    Evaluating instead the field's gradient at each charge position
-    would be O(N_charges * N_grid) -- about 2.2 hours per ionic step for
-    2685 charges on a 320**3 grid, versus seconds here.
 
     Args:
         field: A scalar potential on the grid, in volts.
@@ -514,19 +537,6 @@ def contract_gaussian_gradient(
 
 def electrostatic_potential_from_vasp(hartree, ion):
     """Electrostatic potential of the QM system, in volts.
-
-    VASP hands the plugin the Hartree potential of the electrons and the
-    local potential of the ion cores, both ELECTRON-REFERENCED and in
-    eV: they are what an electron feels.  The electrostatic potential a
-    positive test charge feels is the negative of their sum.
-
-    That single sign is the same convention as V_ext = -phi elsewhere in
-    this package, and getting it backwards is what flipped every nuclear
-    force in Milestone 2.
-
-    Both fields are allocated by VASP whenever
-    PLUGINS/LOCAL_POTENTIAL = T, so a None here means the callback was
-    reached some other way rather than that an INCAR tag is missing.
 
     Args:
         hartree: constants.hartree_potential, or None.

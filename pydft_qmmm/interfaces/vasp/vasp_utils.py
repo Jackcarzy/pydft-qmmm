@@ -3,11 +3,6 @@
 This module contains the file-level plumbing for the VASP interface:
 writers for the POSCAR, INCAR, KPOINTS, and POTCAR files, and a parser
 for the ``vasprun.xml`` file produced by a completed calculation.
-
-VASP groups atoms by species in the POSCAR, while PyDFT-QMMM indexes
-atoms in the order they appear in the system.  The :func:`group_species`
-function produces the permutation relating the two orderings, which the
-interface uses to map forces back onto system indices.
 """
 from __future__ import annotations
 
@@ -277,13 +272,6 @@ def write_pme_data(
 ) -> None:
     r"""Write everything the plugin needs to rebuild the PME potential.
 
-    The cutoff scheme only needs subsystem II, but PME is a lattice sum:
-    the reciprocal part runs over EVERY charge, and a real-space
-    adjustment then removes the ones that must not act on the QM region
-    (``not subsystem III``).  So the whole system crosses the boundary,
-    together with the Ewald parameters, since the plugin constructs its
-    own helPME instance.
-
     Args:
         path: The destination file.
         positions: An Nx3 array of positions
@@ -404,7 +392,11 @@ def read_vasprun(
     return energy, forces
 
 
-def run_vasp(command: str, directory: str) -> None:
+def run_vasp(
+        command: str,
+        directory: str,
+        env: dict[str, str] | None = None,
+) -> None:
     """Run VASP in the given directory.
 
     Args:

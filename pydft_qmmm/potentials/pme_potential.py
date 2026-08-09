@@ -2,6 +2,8 @@
 """
 from __future__ import annotations
 
+import os
+
 __all__ = [
     "HelPMEPyInterface",
     "PMEElectronicPotential",
@@ -36,6 +38,18 @@ except ImportError:
 if TYPE_CHECKING:
     from numpy.typing import NDArray
     from pydft_qmmm import System
+
+
+# helPME's compute_P_adj/compute_PDP_adj take a `minimum_image` flag that
+# decides which separation the exclusion subtraction uses: the raw one,
+# or the nearest periodic image.
+# PYDFT_QMMM_PME_MINIMUM_IMAGE=1 to get the nearest-image form.
+PME_MINIMUM_IMAGE_ENV = "PYDFT_QMMM_PME_MINIMUM_IMAGE"
+
+
+def pme_minimum_image() -> bool:
+    """Whether exclusions use the nearest-image separation."""
+    return bool(os.environ.get(PME_MINIMUM_IMAGE_ENV, "").strip())
 
 
 @dataclass(frozen=True)
@@ -140,7 +154,7 @@ class PMEElectronicPotential(ElectronicPotential, HelPMEPyInterface):
             helpme_py.MatrixD(self.system.positions[excluded, :]),
             helpme_py.MatrixD(coordinates),
             helpme_py.MatrixD(potential),
-            False,
+            pme_minimum_image(),
         )
         return -potential / KJMOL_PER_EH
 
@@ -238,7 +252,7 @@ class PMENuclearPotential(AtomicPotential, HelPMEPyInterface):
             helpme_py.MatrixD(self.system.positions[excluded, :]),
             helpme_py.MatrixD(coordinates),
             helpme_py.MatrixD(potential),
-            False,
+            pme_minimum_image(),
         )
         return potential
 
