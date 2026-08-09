@@ -23,7 +23,8 @@ PyDFT-QMMM: A Modular Framework for DFT-QM/MM Simulation
 
 </p>
 
-(modified by Chengyuan for electrostatic embedding for VASP)
+(modified by Chengyuan: electrostatic embedding for VASP, mechanical
+embedding for SPARC)
 
 Introduction
 ------------
