@@ -209,6 +209,12 @@ class OpenMMInterface(MMInterface):
         ]
         if len(pme_forces) != 1:
             raise TypeError(f"{len(pme_forces)} OpenMM Forces have PME params")
+        # getPMEParametersInContext reaches the CPU platform's nonbonded
+        # kernel through a dynamic_cast.  On a node where helpme_py is
+        # loaded -- which QM/MM/PME always does, one import above this
+        # call -- that cast throws std::bad_cast if the kernel has never
+        # run.  Evaluating the context once binds it and the cast holds.
+        self.base_context.getState(getEnergy=True)
         pme_alpha, *pme_gridnumber = pme_forces[0].getPMEParametersInContext(
             self.base_context,
         )
