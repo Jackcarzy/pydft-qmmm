@@ -116,7 +116,7 @@ class QMMMHamiltonian(CouplingHamiltonian):
             pme_spline_order: int | None = None,
     ) -> None:
         if (close_range, long_range) not in _SUPPORTED_EMBEDDING:
-            raise TypeError
+            raise TypeError # Todo: Make this informative.
         # Every Hamiltonian must own its inner mappings.  A shallow copy
         # would leave them shared with the module template and with other
         # instances, so configuring one Hamiltonian would mutate all of

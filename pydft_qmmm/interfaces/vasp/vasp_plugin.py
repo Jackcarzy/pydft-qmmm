@@ -109,6 +109,11 @@ def _near_potential(positions, charges, shape, cell, sigma):
     )
 
 
+def reset_cache():
+    """Discard the cached external potential.  For tests."""
+    _CACHE.clear()
+
+
 def _record_error(exc):
     """Persist a traceback before re-raising.
 
