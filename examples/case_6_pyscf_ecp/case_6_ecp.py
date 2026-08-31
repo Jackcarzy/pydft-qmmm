@@ -1,19 +1,4 @@
 """QM/MM/PME single point on a heavy atom with an effective core potential.
-
-One iodide ion in a box of SPC/E water.  Iodine's def2 basis sets are
-parameterized against an effective core potential, and PySCF keeps the
-orbital basis and the ECP independent of one another: asking for
-def2-SVP alone would put all 54 of iodide's electrons into a
-26-function valence basis and converge anyway.  The interface refuses
-that combination rather than returning the number, so the ECP has to be
-requested explicitly through `ecp`.
-
-The ECP also decides what the reciprocal sum sees.  The wavefunction
-carries 26 electrons against a core charge of 25 rather than 53, a net
--1, and the coupling Hamiltonian asks the interface for that effective
-charge instead of assuming the atomic number.
-
-Run `python build_iodide_pdb.py` first if `iodide_spce.pdb` is absent.
 """
 from __future__ import annotations
 

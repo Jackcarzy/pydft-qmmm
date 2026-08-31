@@ -15,8 +15,6 @@ particle-mesh Ewald reciprocal sum.  A single energy and force is
 computed rather than a trajectory.  All files needed to run this case
 are in this case directory.
 
-Two settings are worth noting before adapting this case.
-
 PySCF keeps the orbital basis and the effective core potential
 independent of one another, unlike Psi4, which applies the ECP
 automatically when it loads a basis that defines one.  Asking for
@@ -26,22 +24,8 @@ meaningless energy rather than fail.  The interface refuses that
 combination, so the potential is requested explicitly with
 `ecp="def2-svp"`.
 
-The ECP also decides what the reciprocal sum sees.  The wavefunction
-carries 26 electrons against a core charge of 25 rather than 53, for a
-net charge of -1 as iodide should have.  Taking the atomic number
-instead would put +53 against those 26 electrons and enter the
-reciprocal sum as +27, so the coupling Hamiltonian asks the QM
-interface for the effective charge rather than assuming it.
-
 How to Run
 ----------
-The system is shipped ready to use.  To rebuild `iodide_spce.pdb` from
-`spce.pdb`, run:
-
-```bash
-python build_iodide_pdb.py
-```
-
 The case is then run with:
 
 ```bash
@@ -77,16 +61,3 @@ The `PMENuclear` component is the term the effective nuclear charge
 scales.  Computing it from the atomic number instead inflates it by the
 ratio 53/25, an error of about 4800 kJ/mol here, so it is a useful
 quantity to watch when adapting this case to another heavy element.
-
-The last few digits are not reproducible between runs: OpenMM's
-threaded CPU summation order varies, which moves the total by around
-1e-4 kJ/mol.  Everything above that is deterministic.
-
-`QMMMHamiltonian` defaults to `coupling_mode="conservative"`, so the
-reported forces are the gradient of the reported energy.  A charged QM
-region is where that choice shows: under the older
-`coupling_mode="force"` assembly this total is 64.9 kJ/mol higher
-(-822747.900941) and carries an extra `PMEExcluded` component, because
-leaving a net -1 charge in OpenMM's reciprocal sum and correcting it
-afterwards is not equivalent to removing it.  The neutral QM water of
-example case 5 shifts by only 0.18 kJ/mol under the same change.

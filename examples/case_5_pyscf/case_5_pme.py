@@ -20,10 +20,7 @@ from pydft_qmmm.plugins import CentroidPartition
 system = System.load("spce.pdb")
 
 # Define QM Hamiltonian.  `grid_level` sets the quadrature used for both
-# the exchange-correlation and the embedding integrals.  The grid moves
-# with the QM atoms and the terms that generates are omitted, as PySCF
-# omits them from the exchange-correlation gradient, so raising the
-# level tightens how closely the analytic QM force tracks the energy.
+# the exchange-correlation and the embedding integrals.
 qm = QMHamiltonian(
     interface="pyscf",
     basis="def2-svp",
@@ -43,10 +40,7 @@ mm = MMHamiltonian(
     pme_alpha=5.0,
 )
 
-# Define IXN Hamiltonian.  Waters whose centroid lies within 8 Angstroms
-# of the QM region become subsystem II and enter the QM Hamiltonian as
-# point charges; everything beyond is subsystem III and reaches it
-# through the reciprocal sum.
+# Define IXN Hamiltonian.
 qmmm = QMMMHamiltonian(
     "electrostatic",
     "electrostatic",

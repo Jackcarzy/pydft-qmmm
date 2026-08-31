@@ -14,8 +14,7 @@ energy and set of forces is computed rather than a trajectory.  All
 files needed to run this case are in this case directory.
 
 The supported model is a *molecular* QM region embedded in a
-periodically replicated, fixed-charge MM environment: restricted
-Kohn-Sham for a singlet and unrestricted Kohn-Sham above it.  This is
+periodically replicated, fixed-charge MM environment.  This is
 not a `pyscf.pbc` periodic wavefunction, and there are no k-points;
 periodicity enters only through the electrostatic environment that
 OpenMM and the PME machinery provide.
@@ -35,11 +34,6 @@ following command:
 ```bash
 python case_5_pme.py
 ```
-
-A login node is usually capped well below what an SCF over a few
-thousand MM sites needs, so on a Slurm cluster run this case from a
-batch script; `submit.slurm` in this directory is a working template,
-though the environment path in it is site-specific and must be edited.
 
 What to Expect
 --------------
@@ -62,9 +56,6 @@ The `PySCF` component carries the QM energy including both embedding
 terms, and `PMENuclear` is the reciprocal term PyDFT-QMMM retains for
 the QM nuclei.
 
-The last few digits are not reproducible between runs: OpenMM's
-threaded CPU summation order varies, which moves the total by around
-1e-4 kJ/mol.  Everything above that is deterministic.
 
 `QMMMHamiltonian` defaults to `coupling_mode="conservative"`, which
 removes the QM atoms' force-field charges from the OpenMM force objects

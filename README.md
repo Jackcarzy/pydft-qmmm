@@ -23,9 +23,6 @@ PyDFT-QMMM: A Modular Framework for DFT-QM/MM Simulation
 
 </p>
 
-(modified by Chengyuan: electrostatic embedding for VASP, mechanical
-embedding for SPARC, molecular QM/MM and QM/MM/PME embedding for PySCF)
-
 Introduction
 ------------
 
@@ -44,18 +41,29 @@ Requirements
 * [Psi4](https://github.com/psi4/psi4) >= 1.10
   [(LGPL-3.0 license)](https://opensource.org/license/LGPL-3-0).
 
-#### Optional QM engines
-* [PySCF](https://github.com/pyscf/pyscf) >= 2.14 for molecular RKS/UKS in a
-  periodic fixed-charge MM environment, with analytic QM/MM and QM/MM/PME
-  forces [(Apache-2.0 license)](https://opensource.org/license/apache-2-0).
-  Install with the `pyscf` extra.  This is a molecular wavefunction, not
-  `pyscf.pbc`: no k-points, and periodicity enters only through the
-  electrostatic environment.  Effective core potentials are requested
-  with the `ecp` option, which PySCF keeps independent of the basis.
-  RHF, UHF, ROHF, RKS, UKS and ROKS are selectable through `method`,
-  density fitting through `density_fit`, and
-  [GPU4PySCF](https://github.com/pyscf/gpu4pyscf) through
-  `device="gpu"` [(Apache-2.0 license)](https://opensource.org/license/apache-2-0).
+### Configured environments
+
+The following environments and engine installations describe the current
+Georgia Tech setup.  The paths are site-specific and are not general package
+requirements.
+
+| Engine | Engine source |
+| --- | --- |
+| Psi4 |  Psi4 1.11 |
+| PySCF | PySCF 2.14 plus GPU4PySCF |
+| VASP | External `vasp_std` 6.6.1 executable plus the Python plugin |
+| SPARC | `sparc-x-api` plus an external `sparc` executable |
+
+The environment needs these important packages:
+
+* Python 3.10.20
+* Psi4 1.11
+* OpenMM 8.5.2
+* NumPy 2.2.6
+* helPME-py 0.2.2
+* QCEngine and QCElemental
+* ASE 3.29.0
+* Pint 0.24.4
 
 #### Required for QM/MM/PME
 * [helPME-py](https://github.com/johnppederson/helpmy-py) required for evaluating
