@@ -39,6 +39,7 @@ docs = ["sphinx", "sphinx-autodoc-typehints", "furo"]
 arbitrary-topologies = ["ParmEd"]
 enhanced-sampling = ["plumed"]
 qmmm-pme = ["helpme-py"]
+pyscf = ["pyscf>=2.14"]
 dev = ["pre-commit"]
 tests = ["pytest", "pytest-cov"]
 

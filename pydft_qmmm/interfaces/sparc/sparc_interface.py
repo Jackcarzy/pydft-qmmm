@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from ase import Atoms
 
+from pydft_qmmm.interfaces import ElectrostaticCouplingMode
 from pydft_qmmm.interfaces import QMInterface
 from pydft_qmmm.potentials import AtomicPotential
 from pydft_qmmm.utils import system_cache
@@ -40,6 +41,10 @@ class SPARCInterface(QMInterface):
     """
     calculator: SPARC
     charge: int
+
+    def electrostatic_coupling_mode(self) -> ElectrostaticCouplingMode:
+        """Reject electrostatic coupling for SPARC."""
+        return ElectrostaticCouplingMode.UNSUPPORTED
 
     def __post_init__(self) -> None:
         if self.charge:

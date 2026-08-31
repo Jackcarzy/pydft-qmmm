@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+from typing import Any
 from typing import TYPE_CHECKING
 
 import numpy as np
 import psi4.core
 
+from pydft_qmmm.interfaces import ElectrostaticCouplingMode
 from pydft_qmmm.interfaces import QMInterface
 from pydft_qmmm.potentials import AtomicPotential
 from pydft_qmmm.utils import BOHR_PER_ANGSTROM
@@ -24,6 +26,15 @@ if TYPE_CHECKING:
     from pydft_qmmm.potentials import ElectronicPotential
     from pydft_qmmm import System  # noqa: F401
     from . import psi4_utils
+
+
+@dataclass(frozen=True)
+class _Psi4Quadrature:
+    """The exact quadrature used to construct ``EMBPOT``."""
+
+    coordinates: NDArray[np.float64]
+    weights: NDArray[np.float64]
+    blocks: tuple[Any, ...]
 
 
 @dataclass(frozen=True)
@@ -60,6 +71,14 @@ class Psi4Interface(QMInterface):
         default_factory=lambda: [0],
         init=False,
     )
+    quadrature: list[_Psi4Quadrature | None] = field(
+        default_factory=lambda: [None],
+        init=False,
+    )
+
+    def electrostatic_coupling_mode(self) -> ElectrostaticCouplingMode:
+        """Use the shared molecular electrostatic coupling."""
+        return ElectrostaticCouplingMode.MOLECULAR
 
     def add_electronic_potential(self, potential: ElectronicPotential) -> None:
         """Add an electronic potential to apply before calculations.
@@ -70,6 +89,26 @@ class Psi4Interface(QMInterface):
         """
         self.potentials.append(potential)
         self.update_options(perturb_h=True, perturb_with="EMBPOT")
+
+    def nuclear_charges(self) -> NDArray[np.float64]:
+        r"""Get the effective nuclear charges used by Psi4.
+
+        Building the basis applies any effective core potential to
+        ``Molecule.Z``.
+
+        Returns:
+            The nuclear charges (:math:`e`) of the Subsystem I atoms,
+            ordered by ascending system index.
+        """
+        molecule = self._generate_molecule()
+        psi4.core.BasisSet.build(
+            molecule,
+            "BASIS",
+            psi4.core.get_global_option("BASIS"),
+        )
+        return np.array(
+            [molecule.Z(i) for i in range(molecule.natom())], dtype=float,
+        )
 
     @system_cache("positions", "charges", "elements", "subsystems")
     def _generate_wavefunction(self) -> psi4.core.Wavefunction:
@@ -89,14 +128,20 @@ class Psi4Interface(QMInterface):
                 psi4.core.get_global_option("BASIS"),
             )
             grid = psi4.core.DFTGrid.build(molecule, basis_set)
+            grid_blocks = tuple(grid.blocks())
             blocks = []
-            for block in grid.blocks():
+            for block in grid_blocks:
                 x = block.x().np
                 y = block.y().np
                 z = block.z().np
                 w = block.w().np
                 blocks.append(np.stack((x, y, z, w), axis=-1))
             xyzw = np.concatenate(tuple(blocks), axis=0)
+            self.quadrature[0] = _Psi4Quadrature(
+                xyzw[:, :3] / BOHR_PER_ANGSTROM,
+                xyzw[:, 3],
+                grid_blocks,
+            )
             v = np.zeros_like(xyzw[:, 0]).reshape(-1, 1)
             for potential in self.potentials:
                 v += potential.compute_potential(
@@ -104,6 +149,8 @@ class Psi4Interface(QMInterface):
                 )
             data = np.concatenate((xyzw, v), axis=1)
             np.savetxt("EMBPOT", data, header=f"{len(data)}", comments="")
+        else:
+            self.quadrature[0] = None
         _, wfn = psi4.energy(
             self.functional,
             return_wfn=True,
@@ -117,6 +164,32 @@ class Psi4Interface(QMInterface):
             psi4.core.set_output_file("/dev/null", True)
         self.frame[0] += 1
         return wfn
+
+    def _quadrature_density(
+            self,
+            wfn: psi4.core.Wavefunction,
+    ) -> NDArray[np.float64]:
+        """Evaluate the converged electron density on the EMBPOT grid."""
+        quadrature = self.quadrature[0]
+        if quadrature is None:
+            raise RuntimeError("no EMBPOT quadrature is available")
+        density_matrix = np.asarray(wfn.Da()) + np.asarray(wfn.Db())
+        points = wfn.V_potential().properties()[0]
+        density = []
+        for block in quadrature.blocks:
+            points.compute_points(block)
+            npoints = block.npoints()
+            local = np.asarray(
+                block.functions_local_to_global(), dtype=int,
+            )
+            phi = np.asarray(points.basis_values()["PHI"])[
+                :npoints, :len(local)
+            ]
+            local_density = density_matrix[np.ix_(local, local)]
+            density.append(
+                np.einsum("pi,ij,pj->p", phi, local_density, phi),
+            )
+        return np.concatenate(density)
 
     @system_cache("positions", "elements", "subsystems")
     def _generate_molecule(self) -> psi4.core.Molecule:
@@ -214,6 +287,11 @@ class Psi4Potential(Psi4Interface, AtomicPotential):
             acting on atoms in the system.
         """
         wfn = self._generate_wavefunction()
+        quadrature = self.quadrature[0]
+        source_charges = None
+        if quadrature is not None:
+            density = self._quadrature_density(wfn)
+            source_charges = -density * quadrature.weights
         forces = psi4.gradient(
             self.functional,
             ref_wfn=wfn,
@@ -229,6 +307,12 @@ class Psi4Potential(Psi4Interface, AtomicPotential):
                 * -KJMOL_PER_EH * BOHR_PER_ANGSTROM
             )
             forces_temp[embed_indices, :] = forces
+        if quadrature is not None and source_charges is not None:
+            for potential in self.potentials:
+                forces_temp += potential.compute_source_forces(
+                    quadrature.coordinates,
+                    source_charges,
+                )
         return forces_temp
 
     def compute_components(self) -> dict[str, float]:

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from pydft_qmmm.interfaces import ElectrostaticCouplingMode
 from pydft_qmmm.interfaces import QMInterface
 from pydft_qmmm.potentials import AtomicPotential
 from pydft_qmmm.utils import KJMOL_PER_EV
@@ -72,6 +73,10 @@ class VaspInterface(QMInterface):
         default_factory=lambda: [0],
         init=False,
     )
+
+    def electrostatic_coupling_mode(self) -> ElectrostaticCouplingMode:
+        """Keep electrostatic coupling inside the VASP plugin."""
+        return ElectrostaticCouplingMode.ENGINE
 
     def configure_electrostatic_embedding(self, enabled: bool) -> None:
         """Align the VASP plugin with the QM/MM coupling Hamiltonian.

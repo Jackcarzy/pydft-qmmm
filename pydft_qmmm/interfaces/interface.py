@@ -14,6 +14,7 @@ __all__ = [
     "MMInterface",
     "MMPotential",
     "MMFactory",
+    "ElectrostaticCouplingMode",
 ]
 
 from abc import ABC
@@ -21,6 +22,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from dataclasses import field
 from collections.abc import Callable
+from enum import Enum
 from typing import TypeAlias
 from typing import TYPE_CHECKING
 
@@ -29,12 +31,21 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
+from pydft_qmmm.utils import atomic_number
 from pydft_qmmm.utils import TheoryLevel
 from pydft_qmmm.potentials import AtomicPotential
 
 if TYPE_CHECKING:
     from pydft_qmmm import System
     from pydft_qmmm.potentials import ElectronicPotential
+
+
+class ElectrostaticCouplingMode(Enum):
+    """Identify which layer owns QM/MM electrostatic coupling."""
+
+    MOLECULAR = "molecular"
+    ENGINE = "engine"
+    UNSUPPORTED = "unsupported"
 
 
 @dataclass(frozen=True)
@@ -157,6 +168,10 @@ class QMInterface(SoftwareInterface):
     """
     theory_level: TheoryLevel = field(default=TheoryLevel.QM, init=False)
 
+    def electrostatic_coupling_mode(self) -> ElectrostaticCouplingMode:
+        """Get the interface's electrostatic-coupling capability."""
+        return ElectrostaticCouplingMode.UNSUPPORTED
+
     def configure_electrostatic_embedding(self, enabled: bool) -> None:
         """Configure coupling-driven electrostatic embedding.
 
@@ -177,6 +192,22 @@ class QMInterface(SoftwareInterface):
             Whether the nuclear term is the interface's responsibility.
         """
         return False
+
+    def nuclear_charges(self) -> NDArray[np.float64]:
+        r"""Get the effective nuclear charges used by the QM method.
+
+        The default is the atomic number. Interfaces using effective
+        core potentials should override this method.
+
+        Returns:
+            The nuclear charges (:math:`e`) of the Subsystem I atoms,
+            ordered by ascending system index.
+        """
+        nuclei = sorted(self.system.select("subsystem I"))
+        return np.array(
+            [atomic_number(self.system.elements[atom]) for atom in nuclei],
+            dtype=float,
+        )
 
     @abstractmethod
     def add_electronic_potential(self, potential: ElectronicPotential) -> None:

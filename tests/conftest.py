@@ -232,3 +232,226 @@ def vasp_pme_system(vasp_qmmm_system):
             vasp_qmmm_system.subsystems[atom] = Subsystem.III
     assert len(vasp_qmmm_system.select("subsystem III")) > 0
     return vasp_qmmm_system
+
+
+# PySCF fixtures.
+
+# SPC/E charges from tests/data/spce_no_lj.xml.
+SPCE_CHARGES = {"O": -0.8476, "H": 0.4238}
+
+# SPC/E water at the origin: r(OH) = 1 A, HOH = 109.47 deg.
+WATER_GEOMETRY = np.array([
+    [0.00000, 0.0, 0.00000],
+    [0.81650, 0.0, 0.57735],
+    [-0.81650, 0.0, 0.57735],
+])
+
+
+def build_water_system(placements, box_length=12.0):
+    """Build SPC/E waters with assigned subsystems.
+
+    Args:
+        placements: Pairs of an origin for the oxygen and the subsystem
+            the whole molecule belongs to.
+        box_length: The edge length (Angstrom) of the cubic box.
+
+    Returns:
+        The system, with SPC/E charges and masses assigned.
+    """
+    from pydft_qmmm import Atom
+    from pydft_qmmm.utils import ELEMENT_TO_MASS
+    atoms = []
+    for residue, (origin, subsystem) in enumerate(placements):
+        # Match atom names in tests/data/spce_residues.xml.
+        for element, name, offset in zip(
+                ("O", "H", "H"), ("O", "H1", "H2"), WATER_GEOMETRY,
+        ):
+            atoms.append(
+                Atom(
+                    position=np.asarray(origin, dtype=float) + offset,
+                    element=element,
+                    name=name,
+                    residue=residue,
+                    residue_name="HOH",
+                    chain="A",
+                    charge=SPCE_CHARGES[element],
+                    mass=ELEMENT_TO_MASS[element],
+                    subsystem=subsystem,
+                ),
+            )
+    system = System(atoms, np.eye(3) * box_length)
+    assert np.count_nonzero(system.charges) == len(system.charges)
+    return system
+
+
+@pytest.fixture
+def pyscf_water_system():
+    """A single QM water in a cubic box."""
+    return build_water_system([((6.0, 6.0, 6.0), Subsystem.I)])
+
+
+@pytest.fixture
+def pyscf_triplet_system():
+    """Molecular oxygen, whose ground state is a triplet."""
+    from pydft_qmmm import Atom
+    from pydft_qmmm.utils import ELEMENT_TO_MASS
+    atoms = [
+        Atom(
+            position=np.array([6.0, 6.0, 6.0 + z]),
+            element="O",
+            name="O",
+            residue=0,
+            residue_name="OXY",
+            charge=0.0,
+            mass=ELEMENT_TO_MASS["O"],
+            subsystem=Subsystem.I,
+        )
+        for z in (-0.604, 0.604)
+    ]
+    return System(atoms, np.eye(3) * 12.0)
+
+
+@pytest.fixture
+def pyscf_embedded_water():
+    """A QM water and an equivalent bare PySCF embedding."""
+    from pyscf import dft, gto, qmmm
+    from pydft_qmmm.interfaces.pyscf.pyscf_factory import (
+        pyscf_interface_factory,
+    )
+    system = build_water_system([
+        ((6.0, 6.0, 6.0), Subsystem.I),
+        ((6.4, 7.1, 8.7), Subsystem.II),
+    ])
+    potential = pyscf_interface_factory(
+        system,
+        basis="sto-3g",
+        functional="PBE",
+        charge=0,
+        multiplicity=1,
+        conv_tol=1e-11,
+    )
+    qm_indices = sorted(system.select("subsystem I"))
+    mm_indices = sorted(system.select("subsystem II"))
+    mol = gto.M(
+        atom=[
+            (str(system.elements[i]), tuple(system.positions[i]))
+            for i in qm_indices
+        ],
+        unit="Angstrom",
+        basis="sto-3g",
+        charge=0,
+        spin=0,
+        verbose=0,
+    )
+    method = dft.RKS(mol, xc="PBE")
+    method.conv_tol = 1e-11
+    method.grids.level = 3
+    method = qmmm.add_mm_charges(
+        method,
+        np.asarray(system.positions)[mm_indices],
+        np.asarray(system.charges)[mm_indices],
+        unit="Angstrom",
+    )
+    return potential, method, qm_indices, mm_indices
+
+
+@pytest.fixture
+def pyscf_pme_system():
+    """Waters spanning all three subsystems in a small box."""
+    system = build_water_system(
+        [
+            ((4.0, 4.0, 4.0), Subsystem.I),
+            ((4.5, 5.2, 6.3), Subsystem.II),
+            ((7.4, 2.1, 8.0), Subsystem.III),
+            ((1.6, 7.7, 2.4), Subsystem.III),
+        ],
+        box_length=10.0,
+    )
+    assert len(system.select("subsystem I")) > 0
+    assert len(system.select("subsystem II")) > 0
+    assert len(system.select("subsystem III")) > 0
+    return system
+
+
+@pytest.fixture
+def pyscf_pme_adapter(pyscf_pme_system):
+    """A PySCF potential carrying a reciprocal PME electronic potential."""
+    from pydft_qmmm.potentials.pme_potential import PMEElectronicPotential
+    from pydft_qmmm.interfaces.pyscf.pyscf_factory import (
+        pyscf_interface_factory,
+    )
+    potential = pyscf_interface_factory(
+        pyscf_pme_system,
+        basis="sto-3g",
+        functional="PBE",
+        charge=0,
+        multiplicity=1,
+        conv_tol=1e-11,
+    )
+    potential.add_electronic_potential(
+        PMEElectronicPotential(pyscf_pme_system, 0.4, (20, 20, 20), 6),
+    )
+    return potential
+
+
+@pytest.fixture
+def pyscf_openmm_system():
+    """Four SPC/E waters spanning all subsystems in a cubic box."""
+    system = build_water_system(
+        [
+            ((12.0, 12.0, 12.0), Subsystem.I),
+            ((12.4, 13.1, 14.7), Subsystem.II),
+            ((4.0, 19.0, 5.0), Subsystem.III),
+            ((19.5, 4.5, 19.5), Subsystem.III),
+        ],
+        box_length=24.0,
+    )
+    return system
+
+
+@pytest.fixture
+def mm_pyscf_spce():
+    return MMHamiltonian(
+        forcefield=[
+            "tests/data/spce_no_lj.xml",
+            "tests/data/spce_residues.xml",
+        ],
+        nonbonded_cutoff=9.0,
+        pme_gridnumber=48,
+        pme_alpha=3.5,
+    )
+
+
+@pytest.fixture
+def qm_pyscf_water():
+    return QMHamiltonian(
+        interface="pyscf",
+        basis="sto-3g",
+        functional="PBE",
+        charge=0,
+        multiplicity=1,
+        conv_tol=1e-10,
+        # Level 5 limits moving-grid force error to about
+        # 0.003 kJ/mol/Angstrom for this fixture.
+        grid_level=5,
+    )
+
+
+@pytest.fixture
+def pyscf_iodide_system():
+    """An iodide ion for effective-core-potential tests."""
+    from pydft_qmmm import Atom
+    from pydft_qmmm.utils import ELEMENT_TO_MASS
+    atoms = [
+        Atom(
+            position=np.array([6.0, 6.0, 6.0]),
+            element="I",
+            name="I",
+            residue=0,
+            residue_name="IOD",
+            charge=-1.0,
+            mass=ELEMENT_TO_MASS["I"],
+            subsystem=Subsystem.I,
+        ),
+    ]
+    return System(atoms, np.eye(3) * 12.0)

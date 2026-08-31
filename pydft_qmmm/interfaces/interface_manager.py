@@ -19,7 +19,7 @@ from importlib.metadata import entry_points
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-BUNDLED_INTERFACES = ("psi4", "openmm", "sparc", "vasp")
+BUNDLED_INTERFACES = ("psi4", "openmm", "sparc", "vasp", "pyscf")
 
 if TYPE_CHECKING:
     from typing import TypeAlias

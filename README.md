@@ -24,7 +24,7 @@ PyDFT-QMMM: A Modular Framework for DFT-QM/MM Simulation
 </p>
 
 (modified by Chengyuan: electrostatic embedding for VASP, mechanical
-embedding for SPARC)
+embedding for SPARC, molecular QM/MM and QM/MM/PME embedding for PySCF)
 
 Introduction
 ------------
@@ -43,6 +43,19 @@ Requirements
   [(OpenMM licenses)](https://github.com/openmm/openmm/blob/master/docs-source/licenses/Licenses.txt).
 * [Psi4](https://github.com/psi4/psi4) >= 1.10
   [(LGPL-3.0 license)](https://opensource.org/license/LGPL-3-0).
+
+#### Optional QM engines
+* [PySCF](https://github.com/pyscf/pyscf) >= 2.14 for molecular RKS/UKS in a
+  periodic fixed-charge MM environment, with analytic QM/MM and QM/MM/PME
+  forces [(Apache-2.0 license)](https://opensource.org/license/apache-2-0).
+  Install with the `pyscf` extra.  This is a molecular wavefunction, not
+  `pyscf.pbc`: no k-points, and periodicity enters only through the
+  electrostatic environment.  Effective core potentials are requested
+  with the `ecp` option, which PySCF keeps independent of the basis.
+  RHF, UHF, ROHF, RKS, UKS and ROKS are selectable through `method`,
+  density fitting through `density_fit`, and
+  [GPU4PySCF](https://github.com/pyscf/gpu4pyscf) through
+  `device="gpu"` [(Apache-2.0 license)](https://opensource.org/license/apache-2-0).
 
 #### Required for QM/MM/PME
 * [helPME-py](https://github.com/johnppederson/helpmy-py) required for evaluating
@@ -94,4 +107,11 @@ Alternatively, you can clone the repository and install using ``pip``:
 git clone https://github.com/johnppederson/pydft-qmmm
 cd pydft-qmmm
 pip install .
+```
+
+Optional engines and features are installed with extras, for example the
+PySCF interface with QM/MM/PME support:
+
+```bash
+python -m pip install 'pydft_qmmm[pyscf,qmmm-pme]'
 ```
