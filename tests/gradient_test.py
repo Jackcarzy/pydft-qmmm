@@ -60,7 +60,7 @@ class TestCutoffEmbeddingSchemes:
         numerical = numerical_gradient(
             calculator,
             {0},
-            components=["Psi4", "PMENuclear"],
+            components=["Psi4", "PMENuclear", "PMEExcluded"],
         )
         assert analytical - numerical == pytest.approx(0, abs=0.5)
 
