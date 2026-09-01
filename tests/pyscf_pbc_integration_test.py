@@ -167,3 +167,53 @@ def test_cpu_and_gpu_agree(pyscf_pbc_embedded_factory):
     np.testing.assert_allclose(
         gpu.compute_forces(), cpu.compute_forces(), rtol=1e-2, atol=1.0,
     )
+
+
+def test_reciprocal_reaction_on_subsystem_iii_is_exact(
+        pyscf_pbc_pme_interface,
+):
+    """Moving a subsystem III atom must reproduce its analytic force.
+
+    This is the reciprocal half of the MM reaction channel, which the
+    non-PME fixtures never exercise because they have no subsystem III.
+    It must source helPME from the WHOLE QM charge distribution --
+    electrons on the grid and valence nuclei as points -- and write only
+    to MM rows: compute_source_forces returns
+    ``-grad(phi) * system.charges`` for every atom, and the QM atoms
+    still carry force-field charges that conservative coupling zeroes
+    inside OpenMM without touching System.charges.
+
+    Sourcing from the electrons alone, or letting the QM rows through,
+    both break this.
+    """
+    interface = pyscf_pbc_pme_interface
+    assert interface.potentials, "fixture must register a PME potential"
+    system = interface.system
+    atom = sorted(system.select("subsystem III"))[0]
+    analytic = interface.compute_forces()[atom]
+    numeric = _central_difference(interface, atom, 2e-3)
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-4, atol=1e-3)
+
+
+@pytest.mark.xfail(
+    reason=(
+        "KNOWN GAP, not yet root-caused.  With PME active the reported "
+        "QM force is not the derivative of the reported energy: measured "
+        "11.97 kJ/mol/A on a QM atom at the full-calculator level, with a "
+        "residual net force of about 10.  The MM side is exact (see "
+        "test_reciprocal_reaction_on_subsystem_iii_is_exact) and the "
+        "non-PME path is conservative to well under 1, so the missing "
+        "term is on the QM side and involves the QM atoms' own "
+        "force-field charges entering V_rec: PMEExcludedPotential "
+        "supplies that correction for a MOLECULAR QM region, and whether "
+        "it is correct for a PERIODIC one has not been established."
+    ),
+    strict=True,
+)
+def test_pme_qm_force_matches_central_differences(pyscf_pbc_pme_interface):
+    """The QM force must differentiate the energy when PME is active."""
+    interface = pyscf_pbc_pme_interface
+    atom = sorted(interface.system.select("subsystem I"))[0]
+    analytic = interface.compute_forces()[atom]
+    numeric = _central_difference(interface, atom, 2e-3)
+    np.testing.assert_allclose(analytic, numeric, rtol=5e-3, atol=1.0)

@@ -271,12 +271,31 @@ def mm_forces(
         ) * KJMOL_PER_EV / KJMOL_PER_EH / BOHR_PER_ANGSTROM
 
     # Subsystem III and the periodic images, through the same helPME
-    # instance that built the reciprocal half of V_ext.  The nuclei are
-    # excluded here: the coupling Hamiltonian's own nuclear potential
-    # is switched off by applies_nuclear_potential, and the reciprocal
-    # nuclear reaction is accounted for there.
-    for potential in state.potentials:
-        forces += np.asarray(
-            potential.compute_source_forces(state.coords, charge),
-        ) / KJMOL_PER_EH / BOHR_PER_ANGSTROM
+    # instance that built the reciprocal half of V_ext.
+    #
+    # The source is the WHOLE QM charge distribution: the electrons on
+    # the grid and the valence nuclei as point charges.  Leaving the
+    # nuclei out drops the reaction to channel 3 entirely, because
+    # applies_nuclear_potential() tells the coupling Hamiltonian to skip
+    # its own PMENuclearPotential -- the very term that would otherwise
+    # have supplied it.  Owning the nuclear coupling means owning both
+    # sides of it.
+    if state.potentials:
+        sources = np.vstack([
+            state.coords,
+            np.asarray(cell.atom_coords()) / BOHR_PER_ANGSTROM,
+        ])
+        strengths = np.concatenate([charge, valence_charges(cell)])
+        for potential in state.potentials:
+            reciprocal = np.asarray(
+                potential.compute_source_forces(sources, strengths),
+            )
+            # compute_source_forces returns -grad(phi) * system.charges
+            # for EVERY atom, and the QM atoms still carry their
+            # force-field charges: conservative coupling zeroes those
+            # inside OpenMM without touching System.charges.  The force
+            # on a QM atom from V_rec is channels 2 and 3, so those rows
+            # here are both spurious and wrongly weighted.
+            reciprocal[list(state.qm_indices)] = 0.0
+            forces += reciprocal / KJMOL_PER_EH / BOHR_PER_ANGSTROM
     return forces

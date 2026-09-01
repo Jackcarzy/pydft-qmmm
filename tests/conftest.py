@@ -366,6 +366,34 @@ def pyscf_pbc_embedded_factory():
 
 
 @pytest.fixture
+def pyscf_pbc_pme_interface():
+    """An embedded interface with subsystem III and a live PME potential.
+
+    pyscf_pbc_embedded_interface has no subsystem III, so it never
+    registers a PMEElectronicPotential and the reciprocal half of V_ext
+    -- and its reaction on the MM sites -- goes entirely unexercised.
+    That gap hid a missing nuclear reaction term in the reciprocal
+    channel, so this fixture exists to close it.
+    """
+    from pydft_qmmm.potentials.pme_potential import PMEElectronicPotential
+    system = build_water_system(
+        [
+            ((4.0, 4.0, 4.0), Subsystem.I),
+            ((4.3, 5.9, 6.1), Subsystem.II),
+            ((9.2, 9.6, 9.1), Subsystem.III),
+            ((2.1, 8.2, 3.4), Subsystem.III),
+        ],
+        box_length=12.0,
+    )
+    interface = build_pbc_interface(system)
+    interface.configure_electrostatic_embedding(True)
+    interface.add_electronic_potential(
+        PMEElectronicPotential(system, 5.0, (24, 24, 24), 6),
+    )
+    return interface
+
+
+@pytest.fixture
 def pyscf_pbc_embedded_interface(pyscf_pbc_embedded_factory):
     """An embedded interface, and the same geometry left unembedded.
 

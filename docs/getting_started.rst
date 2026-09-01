@@ -39,6 +39,33 @@ wavefunction: there are no k-points, and the periodicity enters only
 through the electrostatic environment that OpenMM and the PME machinery
 provide.
 
+For a genuinely periodic wavefunction, use the separate ``pyscf_pbc``
+interface, in which the QM cell *is* the simulation box.  It differs
+from the molecular one in ways that make it a distinct interface rather
+than a flag: a GTH ``pseudo`` is mandatory and ``ecp`` is rejected,
+because the periodic gradient code refuses all-electron cells;
+``ke_cutoff`` or ``mesh`` replaces ``grid_level``; and the embedding is
+integrated on the solver's uniform FFT grid rather than an atom-centred
+one.  Sampling is a single k-point.
+
+.. code-block:: python
+
+    qm = QMHamiltonian(
+        interface="pyscf_pbc",
+        basis="gth-dzvp",
+        pseudo="gth-pbe",
+        functional="pbe",
+        charge=0,
+        multiplicity=1,
+        ke_cutoff=200.0,
+    )
+
+Two costs follow from the QM cell being the box.  The box size sets the
+size of the QM calculation, so a large MM box is expensive; and
+``ke_cutoff`` has to be converged against a **force** rather than an
+energy, because the energy settles at a cutoff where the gradient is
+still badly under-resolved.
+
 .. code-block:: python
 
     qm = QMHamiltonian(
@@ -143,7 +170,9 @@ parameter files is demonstrated in :example:`2`.  QM/MM/PME with PySCF
 as the QM engine is demonstrated in :example:`case 5 <5_pyscf>`, and a
 heavy-atom QM region whose basis carries an effective core potential in
 :example:`case 6 <6_pyscf_ecp>`.  :example:`Case 7 <7_pyscf_gpu>` repeats
-case 5 on a GPU and compares the two devices.
+case 5 on a GPU and compares the two devices.  :example:`Case 8
+<8_pyscf_pbc>` uses a periodic ``pyscf.pbc`` wavefunction whose cell is
+the simulation box.
 
 Templates
 =========
