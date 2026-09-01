@@ -291,6 +291,20 @@ def pyscf_water_system():
 
 
 @pytest.fixture
+def pyscf_pbc_system():
+    """A single QM water in a small periodic box.
+
+    The periodic QM cell is the simulation box itself, so the box is
+    kept small: at ke_cutoff=80 an 8 Angstrom edge is a ~27**3 mesh,
+    where a 12 Angstrom one is over three times the points for no extra
+    coverage of the physics under test.
+    """
+    return build_water_system(
+        [((4.0, 4.0, 4.0), Subsystem.I)], box_length=8.0,
+    )
+
+
+@pytest.fixture
 def pyscf_triplet_system():
     """Molecular oxygen, whose ground state is a triplet."""
     from pydft_qmmm import Atom
