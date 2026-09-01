@@ -197,3 +197,47 @@ def test_gaussian_contraction_is_the_adjoint_of_spreading():
         ) * volume_element
         numeric[axis] = -(plus - minus) / (2.0 * step)
     np.testing.assert_allclose(analytic, numeric, rtol=1e-3, atol=1e-6)
+
+
+# ---------------------------------------------------------------------
+# The one-electron operator
+# ---------------------------------------------------------------------
+
+
+def test_constant_potential_recovers_the_electron_count(pyscf_pbc_system):
+    """Tr(D . V_ao) for constant V must be -N_elec * V.
+
+    A uniform mesh cannot integrate an all-electron density; it can
+    integrate a pseudopotential one.  If this drifts, the quadrature is
+    no longer resolving the density and every embedding energy is
+    wrong.  This is the assertion that catches a 170-electrons-instead
+    -of-10 quadrature failure directly.
+    """
+    import pyscf
+    from pyscf import pbc as cpu_pbc
+    from pydft_qmmm.interfaces.pyscf_pbc.pbc_cell import build_cell
+    from pydft_qmmm.interfaces.pyscf_pbc.pbc_embedding import (
+        ao_operator, grid_coordinates,
+    )
+    cell, _ = build_cell(
+        pyscf_pbc_system, "gth-szv", "gth-pbe", 80.0, None, 0, 1, 0,
+    )
+    kpts = cell.make_kpts([1, 1, 1])
+    coords, weights = grid_coordinates(cell)
+    constant = 0.25
+    potential = np.full(len(coords), constant)
+    matrix = ao_operator(pyscf, cell, kpts, coords, weights, potential)
+    mf = cpu_pbc.dft.KRKS(cell, kpts=kpts, xc="pbe")
+    overlap = mf.get_ovlp()
+    # For a constant potential the operator IS the overlap, scaled.
+    # Comparing to the analytic overlap rather than to the electron
+    # count isolates the quadrature: the initial guess is normalized to
+    # 7.9904 rather than 8, which would otherwise show up here as a
+    # 0.1% error that has nothing to do with the integration.
+    np.testing.assert_allclose(
+        matrix, constant * overlap, rtol=0, atol=1e-4,
+    )
+    dm = mf.get_init_guess()
+    trace = np.einsum("kij,kji->", dm, matrix).real
+    reference = constant * np.einsum("kij,kji->", dm, overlap).real
+    assert trace == pytest.approx(reference, rel=1e-4)
