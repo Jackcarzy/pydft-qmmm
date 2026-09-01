@@ -304,6 +304,75 @@ def pyscf_pbc_system():
     )
 
 
+def build_pbc_interface(system, device="cpu", **overrides):
+    """Build a periodic PySCF interface over a system.
+
+    Args:
+        system: The system to tie the interface to.
+        device: Either ``cpu`` or ``gpu``.
+        overrides: Any factory argument to replace.
+
+    Returns:
+        The periodic PySCF interface.
+    """
+    from pydft_qmmm.interfaces.pyscf_pbc.pbc_factory import (
+        pyscf_pbc_interface_factory,
+    )
+    options = dict(
+        basis="gth-szv",
+        pseudo="gth-pbe",
+        functional="pbe",
+        charge=0,
+        multiplicity=1,
+        ke_cutoff=80.0,
+        device=device,
+        conv_tol=1e-10,
+    )
+    options.update(overrides)
+    return pyscf_pbc_interface_factory(system, **options)
+
+
+def build_pbc_embedded_system():
+    """A QM water with one subsystem II water in a small periodic box."""
+    return build_water_system(
+        [
+            ((4.0, 4.0, 4.0), Subsystem.I),
+            ((4.3, 5.9, 6.1), Subsystem.II),
+        ],
+        box_length=8.0,
+    )
+
+
+@pytest.fixture
+def pyscf_pbc_embedded_factory():
+    """Build an embedded periodic interface on a chosen device.
+
+    Both devices get an identical system, so any difference between
+    them is the backend rather than the input.
+    """
+    def build(device="cpu"):
+        interface = build_pbc_interface(
+            build_pbc_embedded_system(), device=device,
+        )
+        interface.configure_electrostatic_embedding(True)
+        return interface
+    return build
+
+
+@pytest.fixture
+def pyscf_pbc_embedded_interface(pyscf_pbc_embedded_factory):
+    """An embedded interface, and the same geometry left unembedded.
+
+    The unembedded energy is computed through a separate interface
+    rather than by toggling the flag on this one: the SCF cache keys on
+    the system state, not on the embedding flag, so toggling would
+    return the stale result.
+    """
+    interface = pyscf_pbc_embedded_factory("cpu")
+    bare = build_pbc_interface(interface.system).compute_energy()
+    return interface, bare
+
+
 @pytest.fixture
 def pyscf_triplet_system():
     """Molecular oxygen, whose ground state is a triplet."""

@@ -51,3 +51,8 @@ packages = ["pydft_qmmm"]
 [tool.mypy]
 ignore_missing_imports = true
 exclude = ["__main__.py"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: runs an SCF; submit with sbatch, not on the login node",
+]
