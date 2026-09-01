@@ -241,3 +241,63 @@ def test_constant_potential_recovers_the_electron_count(pyscf_pbc_system):
     trace = np.einsum("kij,kji->", dm, matrix).real
     reference = constant * np.einsum("kij,kji->", dm, overlap).real
     assert trace == pytest.approx(reference, rel=1e-4)
+
+
+# ---------------------------------------------------------------------
+# Cross-validation against the VASP construction
+# ---------------------------------------------------------------------
+
+
+def test_reciprocal_potential_matches_the_vasp_construction(tmp_path):
+    """The periodic coupling is shared with VASP, so it must agree.
+
+    Total energies are not comparable between the two interfaces --
+    GTH-PBE and PAW-PBE are different pseudopotentials -- but V_ext is.
+    Both build the reciprocal half from helPME with the same alpha, the
+    same "not subsystem III" exclusion and the same spline order, and
+    they do it through completely separate code: PyDFT-QMMM's
+    PMEElectronicPotential here, and the file-driven build_pme_potential
+    that runs inside VASP's embedded interpreter there.  Sampling both
+    on identical points isolates the coupling from the wavefunction.
+    """
+    from pydft_qmmm.interfaces.vasp.pme_external import (
+        build_pme_potential, grid_coordinates as vasp_grid,
+    )
+    from pydft_qmmm.interfaces.vasp import vasp_utils
+    from pydft_qmmm.potentials.pme_potential import PMEElectronicPotential
+    from pydft_qmmm.utils import KJMOL_PER_EH, KJMOL_PER_EV, Subsystem
+    from tests.conftest import build_water_system
+
+    system = build_water_system(
+        [
+            ((4.0, 4.0, 4.0), Subsystem.I),
+            ((4.3, 5.9, 6.1), Subsystem.II),
+            ((9.0, 9.5, 9.2), Subsystem.III),
+            ((2.0, 8.0, 3.0), Subsystem.III),
+        ],
+        box_length=12.0,
+    )
+    alpha, mesh, spline = 5.0, (30, 30, 30), 6
+    box = np.asarray(system.box, dtype=np.float64)
+
+    ours = np.asarray(
+        PMEElectronicPotential(system, alpha, mesh, spline).compute_potential(
+            vasp_grid(mesh, box),
+        ),
+    ).reshape(-1)
+
+    path = str(tmp_path / "PME_DATA")
+    vasp_utils.write_pme_data(
+        path,
+        np.asarray(system.positions),
+        np.asarray(system.charges),
+        sorted(system.select("not subsystem III")),
+        alpha, mesh, spline, 0,
+    )
+    theirs = build_pme_potential(path, mesh, box).reshape(-1)
+    theirs = theirs * KJMOL_PER_EV / KJMOL_PER_EH
+
+    # Both must be doing something: an identically zero field would
+    # otherwise make this pass while testing nothing.
+    assert np.max(np.abs(ours)) > 1e-6
+    np.testing.assert_allclose(ours, theirs, rtol=1e-8, atol=1e-10)
