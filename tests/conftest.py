@@ -318,13 +318,19 @@ def build_pbc_interface(system, device="cpu", **overrides):
     from pydft_qmmm.interfaces.pyscf_pbc.pbc_factory import (
         pyscf_pbc_interface_factory,
     )
+    # ke_cutoff=200 rather than 80.  The FFT grid at 80 gives energies
+    # that look converged but leaves a large residual net force in
+    # PySCF's own periodic gradient: 203 kJ/mol/A for gth-szv and 93
+    # for gth-dzvp, against 5.3 and 0.7 at 200.  A constant-potential
+    # quadrature check cannot see this, because the grid error cancels
+    # when the potential does not vary; only a gradient exposes it.
     options = dict(
-        basis="gth-szv",
+        basis="gth-dzvp",
         pseudo="gth-pbe",
         functional="pbe",
         charge=0,
         multiplicity=1,
-        ke_cutoff=80.0,
+        ke_cutoff=200.0,
         device=device,
         conv_tol=1e-10,
     )

@@ -333,7 +333,17 @@ class PySCFPBCPotential(PySCFPBCInterface, AtomicPotential):
             The forces (:math:`\mathrm{kJ\;mol^{-1}\;\mathring{A}^{-1}}`)
             acting on atoms in the system.
         """
-        raise NotImplementedError("implemented in Tasks 7 and 8")
+        from .pbc_forces import mm_forces
+        from .pbc_forces import qm_forces
+        state = self._scf_state()
+        backend = load_backend(self.device)
+        natoms = len(self.system.positions)
+        forces = qm_forces(backend, state, self.system.box, natoms)
+        if self.embedding:
+            forces += mm_forces(
+                backend, state, self.system, self.embedding_sigma, natoms,
+            )
+        return forces * KJMOL_PER_EH * BOHR_PER_ANGSTROM
 
     def compute_components(self) -> dict[str, float]:
         r"""Compute the components of the energy.
