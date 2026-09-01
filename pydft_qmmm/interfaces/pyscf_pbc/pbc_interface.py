@@ -155,13 +155,11 @@ class PySCFPBCInterface(QMInterface):
             The valence charges (:math:`e`) of the subsystem I atoms,
             ordered by ascending system index.
         """
-        from ..pyscf.pyscf_backend import load_backend
         from .pbc_cell import build_cell
         from .pbc_cell import valence_charges
         cell, _ = build_cell(
-            load_backend(self.device), self.system, self.basis,
-            self.pseudo, self.ke_cutoff, self.mesh, self.charge,
-            self.multiplicity, self.verbose,
+            self.system, self.basis, self.pseudo, self.ke_cutoff,
+            self.mesh, self.charge, self.multiplicity, self.verbose,
         )
         return valence_charges(cell)
 

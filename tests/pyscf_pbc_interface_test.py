@@ -70,3 +70,33 @@ def test_a_valid_configuration_builds(pyscf_pbc_system):
     assert interface.pseudo == "gth-pbe"
     assert interface.ke_cutoff == 80.0
     assert interface.embedding_sigma == 0.3
+
+
+# ---------------------------------------------------------------------
+# The periodic cell
+# ---------------------------------------------------------------------
+
+
+def test_cell_lattice_matches_the_system_box(pyscf_pbc_system):
+    from pydft_qmmm.interfaces.pyscf_pbc.pbc_cell import build_cell
+    cell, qm_indices = build_cell(
+        pyscf_pbc_system, "gth-szv", "gth-pbe",
+        80.0, None, 0, 1, 0,
+    )
+    # cell.a is in Angstrom, as system.box is.
+    np.testing.assert_allclose(np.asarray(cell.a), pyscf_pbc_system.box)
+    assert qm_indices == tuple(sorted(pyscf_pbc_system.select("subsystem I")))
+
+
+def test_valence_charges_are_not_atomic_numbers(pyscf_pbc_system):
+    from pydft_qmmm.interfaces.pyscf_pbc.pbc_cell import (
+        build_cell, valence_charges,
+    )
+    cell, _ = build_cell(
+        pyscf_pbc_system, "gth-szv", "gth-pbe",
+        80.0, None, 0, 1, 0,
+    )
+    charges = valence_charges(cell)
+    # gth-pbe oxygen carries 6 valence electrons, not 8.
+    assert charges.sum() == pytest.approx(cell.nelectron)
+    assert charges.max() == pytest.approx(6.0)
