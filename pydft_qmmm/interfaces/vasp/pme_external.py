@@ -111,8 +111,9 @@ def build_pme_potential(path, shape, cell, expect_step=None, chunk=1 << 20):
     )
     all_charges = helpme_py.MatrixD(charges.reshape(-1, 1))
     all_positions = helpme_py.MatrixD(positions)
-    excluded_charges = helpme_py.MatrixD(charges[excluded].reshape(-1, 1))
-    excluded_positions = helpme_py.MatrixD(positions[excluded, :])
+    if excluded.size:
+        excluded_charges = helpme_py.MatrixD(charges[excluded].reshape(-1, 1))
+        excluded_positions = helpme_py.MatrixD(positions[excluded, :])
 
     coordinates = grid_coordinates(shape, cell)
     potential = np.zeros(len(coordinates))
@@ -122,9 +123,10 @@ def build_pme_potential(path, shape, cell, expect_step=None, chunk=1 << 20):
         matrix = helpme_py.MatrixD(values)
         pme.compute_P_rec(0, all_charges, all_positions,
                           helpme_py.MatrixD(block), 0, matrix)
-        pme.compute_P_adj(0, excluded_charges, excluded_positions,
-                          helpme_py.MatrixD(block), matrix,
-                          _minimum_image())
+        if excluded.size:
+            pme.compute_P_adj(0, excluded_charges, excluded_positions,
+                              helpme_py.MatrixD(block), matrix,
+                              _minimum_image())
         potential[start:start + chunk] = values[:, 0]
     # helPME reports the electrostatic potential in kJ/mol/e; VASP wants
     # the electron potential ENERGY in eV, hence the negation.

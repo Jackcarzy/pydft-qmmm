@@ -231,7 +231,16 @@ class VaspInterface(QMInterface):
         return len(charges)
 
     def _write_pme_data(self) -> int:
-        r"""Write the whole system plus Ewald parameters for the plugin.
+        r"""Write the PME sources and Ewald parameters for the plugin.
+
+        FFT embedding uses only subsystem III as periodic PME sources.
+        The Gaussian FFT already supplies subsystem II and its images;
+        VASP treats subsystem I periodically.  Remove I and II from the
+        source charges rather than subtracting a single-image erf field.
+        The physical charges and MM_CHARGES remain unchanged.
+
+        The experimental erfc route retains its reciprocal II field,
+        which is needed to complement the real-space erfc correction.
 
         Returns:
             The number of charges written.
@@ -239,17 +248,19 @@ class VaspInterface(QMInterface):
         os.makedirs(self.directory, exist_ok=True)
         potential = self.potentials[0]
         from .vasp_plugin import erfc_near_enabled
+        charges = np.array(self.system.charges, copy=True)
         if erfc_near_enabled():
             excluded = sorted(self.system.select("subsystem I"))
         else:
-            excluded = sorted(self.system.select("not subsystem III"))
+            charges[sorted(self.system.select("not subsystem III"))] = 0.
+            excluded = []
         path = os.path.join(self.directory, "PME_DATA")
         if os.path.isfile(path):
             os.remove(path)
         vasp_utils.write_pme_data(
             path,
             np.asarray(self.system.positions),
-            np.asarray(self.system.charges),
+            charges,
             excluded,
             potential.pme_alpha,
             tuple(potential.pme_gridnumber),
