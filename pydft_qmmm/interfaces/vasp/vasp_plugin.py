@@ -142,9 +142,9 @@ def _external_potential(constants):
         # parameters, and helPME evaluates on VASP's own grid.
         from .pme_external import build_pme_potential
         v_pme = build_pme_potential(PME_FILE, shape, cell)
-        # PME alone is NOT the whole potential.  compute_P_adj removed
-        # subsystems I and II from the reciprocal sum, so the near field
-        # has to be put back explicitly.
+        # In FFT mode PME contains only III; the near field supplies II
+        # and its periodic images once.  In erfc mode II remains in PME
+        # and the near field supplies its real-space complement.
         positions, charges, _, sigma = read_mm_charges(CHARGE_FILE)
         if erfc_near_enabled():
             # alpha must be the one the reciprocal sum used, or the two
