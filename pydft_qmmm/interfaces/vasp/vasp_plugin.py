@@ -23,6 +23,7 @@ from .grid_potential import interpolate_at
 from .grid_potential import interpolate_onto_grid
 from .grid_potential import read_mm_charges
 from .grid_potential import spectral_value_and_gradient
+from .grid_potential import spline_value_and_gradient
 
 __all__ = [
     "EPS0", "KJMOL_PER_EV", "CHARGE_FILE", "FORCE_FILE",
@@ -50,6 +51,9 @@ COARSE_NEAR_ENV = "PYDFT_QMMM_VASP_COARSE_NEAR"
 
 # Opt-in: reinstate the near field as the Ewald real-space correction.
 ERFC_NEAR_ENV = "PYDFT_QMMM_VASP_ERFC_NEAR"
+
+# Keep the exact Fourier evaluation available for convergence comparisons.
+NUCLEAR_FIELD_ENV = "PYDFT_QMMM_VASP_NUCLEAR_FIELD"
 
 _CACHE = {}
 
@@ -249,10 +253,14 @@ def force_and_stress(constants, additions):
             valence = np.asarray(constants.ZVAL, dtype=np.float64)[
                 np.asarray(constants.ion_types, dtype=int)
             ]
-            # One Fourier series supplies both, so the force is exactly
-            # the derivative of the energy.  See
-            # spectral_value_and_gradient.
-            potential, gradient = spectral_value_and_gradient(
+            # Differentiate the same interpolant used for the energy.
+            # The spectral route remains a reference for grid convergence.
+            route = os.environ.get(NUCLEAR_FIELD_ENV, "spline").strip().lower()
+            if route not in ("spline", "spectral"):
+                raise ValueError(f"{NUCLEAR_FIELD_ENV} must be spline or spectral")
+            evaluate = (spline_value_and_gradient if route == "spline"
+                        else spectral_value_and_gradient)
+            potential, gradient = evaluate(
                 v_ext, cell, positions,
             )
             additions.total_energy += -float(np.sum(valence * potential))
