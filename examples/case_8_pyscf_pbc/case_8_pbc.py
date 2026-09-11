@@ -1,35 +1,15 @@
-"""QM/MM single point with a PERIODIC PySCF wavefunction.
-
-Unlike case 5, the QM region here is not a molecule in a periodic
-environment: the wavefunction itself is periodic, and the QM cell is
-the simulation box.  This is the model the VASP interface implements,
-run in-process with Gaussian basis functions instead of through a
-separate binary.
-
-Because the QM cell IS the box, the box size sets the cost of the QM
-calculation.  That is why this case ships a 12 Angstrom box rather than
-reusing the 29.9 Angstrom box of cases 0 and 5: at a force-converged
-cutoff the larger box needs a mesh several hundred points on a side.
-"""
+"""Periodic PySCF QM/MM single point in a 12 Å water box."""
 from __future__ import annotations
 
 from pydft_qmmm import *
 from pydft_qmmm.plugins import CentroidPartition
 
-# Load system first.  The CRYST1 record sets the periodic QM cell.
+# CRYST1 sets the periodic QM cell.
 system = System.load("spce_small.pdb")
 
-# Define QM Hamiltonian.
-#
-# pseudo is mandatory: the periodic gradient code rejects all-electron
-# cells, so an ECP or a bare all-electron basis will not work here.
-#
-# ke_cutoff must be converged against a FORCE, not an energy.  On a
-# water cell the net force -- which translational invariance requires to
-# vanish -- is 93 kJ/mol/Angstrom at ke_cutoff=80 with this basis and
-# 0.7 at 200, while the energy already looks settled at 80.
+# The pseudopotential is required; converge ke_cutoff against forces.
 qm = QMHamiltonian(
-    interface="pyscf_pbc",
+    interface="pyscf-pbc",
     basis="gth-dzvp",
     pseudo="gth-pbe",
     functional="pbe",
@@ -40,7 +20,6 @@ qm = QMHamiltonian(
     # device="gpu",   # needs GPU4PySCF and a CUDA runtime
 )
 
-# Define MM Hamiltonian.
 mm = MMHamiltonian(
     forcefield=["spce.xml", "spce_residues.xml"],
     nonbonded_method="PME",
@@ -49,20 +28,17 @@ mm = MMHamiltonian(
     pme_alpha=5.0,
 )
 
-# Define IXN Hamiltonian.
 qmmm = QMMMHamiltonian(
     "electrostatic",
     "electrostatic",
     partition=CentroidPartition("all", 4.0),
 )
 
-# Define QM/MM Hamiltonian.  The first water is the QM subsystem.
+# The first water is QM.
 total = qm[:3] + mm[3:] + qmmm
 
-# Build calculator.
 calculator = total.build_calculator(system)
 
-# Run a single point.
 results = calculator.calculate()
 
 print(f"total energy   {results.energy:18.6f} kJ/mol")

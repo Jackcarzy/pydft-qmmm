@@ -1,11 +1,4 @@
-"""The periodic PySCF interface and potential.
-
-The QM cell is the OpenMM simulation box itself, so the wavefunction is
-periodic rather than molecular.  That rules out ``pyscf.qmmm``, whose
-assertions pass for a pbc SCF object but whose integrals carry no
-lattice sum, so the MM environment reaches the electrons through a
-real-space potential sampled on the cell's own uniform FFT grid.
-"""
+"""Periodic PySCF with MM embedding on the solver's FFT grid."""
 from __future__ import annotations
 
 __all__ = ["PySCFPBCInterface", "PySCFPBCPotential"]
@@ -42,26 +35,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class _SCFState:
-    r"""A converged periodic solver and everything derived with it.
+    """Converged SCF state and its embedding data.
 
-    Attributes:
-        cell: The periodic cell for subsystem I.
-        qm_indices: The original system indices of subsystem I, in cell
-            order.
-        embed_indices: The original system indices of subsystem II.
-        kpts: The k-points, a single point in this release.
-        method: The converged KRKS or KUKS solver.
-        dm: The converged density matrix.
-        coords: The uniform grid coordinates
-            (:math:`\mathrm{\mathring{A}}`).
-        weights: The uniform quadrature weights (:math:`\mathrm{a_0^3}`).
-        potential: V_ext (:math:`\mathrm{E_h}`) at each grid point.
-        matrix: The one-electron operator added to the core Hamiltonian.
-        nuclear_energy: The energy (:math:`\mathrm{E_h}`) of the QM
-            nuclei in V_ext.
-        potentials: The registered electronic potentials, kept so the
-            reaction forces use the same helPME instance that built
-            V_ext rather than a freshly constructed one.
+    Atom indices refer to the full system. Coordinates use Å, weights
+    Bohr³, k-points inverse Bohr, and potentials/matrices/energies Hartree.
+    Keep the forward potential instances for their reaction forces.
     """
     cell: Any
     qm_indices: tuple[int, ...]
@@ -82,20 +60,9 @@ def _nuclear_coupling(
         potential: NDArray[np.float64],
         box: NDArray[np.float64],
 ) -> float:
-    r"""The energy of the QM nuclei in the external potential.
+    """Return −Σ Z V_ext(R) in Hartree, using nuclear valence charges.
 
-    Z_I is the pseudopotential valence charge, not the atomic number:
-    under a pseudopotential the nucleus carries only valence charge, so
-    the atomic number would over-count by the core electrons.
-
-    Args:
-        cell: A built periodic cell.
-        potential: V_ext (:math:`\mathrm{E_h}`) at each grid point.
-        box: A 3x3 array whose rows are lattice vectors
-            (:math:`\mathrm{\mathring{A}}`).
-
-    Returns:
-        The nuclear embedding energy (:math:`\mathrm{E_h}`).
+    Interpolate the electron potential on the FFT grid; box vectors use Å.
     """
     mesh = tuple(int(n) for n in cell.mesh)
     positions = np.asarray(cell.atom_coords()) / BOHR_PER_ANGSTROM
@@ -109,37 +76,10 @@ def _nuclear_coupling(
 
 @dataclass(frozen=True)
 class PySCFPBCInterface(QMInterface):
-    r"""Store and manipulate periodic PySCF data types.
+    """Periodic SCF configuration; see pyscf_pbc_interface_factory for arguments.
 
-    Args:
-        system: The system that will inform the interface.
-        basis: The GTH basis set name.
-        pseudo: The GTH pseudopotential name.
-        functional: The exchange-correlation functional, or None for
-            Hartree-Fock.
-        ke_cutoff: The kinetic energy cutoff (:math:`\mathrm{E_h}`), or
-            None when an explicit mesh is given.
-        mesh: An explicit FFT mesh, or None when a cutoff is given.
-        embedding_sigma: The Gaussian width
-            (:math:`\mathrm{\mathring{A}}`) smearing subsystem II point
-            charges onto the grid.
-        device: Either ``cpu`` for PySCF or ``gpu`` for GPU4PySCF.
-        charge: The net charge (:math:`e`) of the QM subsystem.
-        multiplicity: The spin multiplicity of the QM subsystem.
-        output_file: The file PySCF output is written to, or None.
-        output_interval: The interval at which output is written.
-        conv_tol: The SCF convergence threshold (:math:`\mathrm{E_h}`).
-        max_cycle: The maximum number of SCF iterations.
-        verbose: The PySCF logging verbosity.
-        options: Additional attributes to set on the solver.
-
-    Attributes:
-        potentials: The electronic potentials folded into the core
-            Hamiltonian.
-        density_guess: The last compatible density matrix for SCF reuse.
-        frame: The estimated current frame, for output writing.
-        embedding: Whether the QM/MM Hamiltonian assigns electrostatics
-            to the QM level.
+    potentials holds added electronic fields; density_guess stores the last
+    SCF density. frame tracks log writes and embedding enables QM/MM fields.
     """
     basis: str
     pseudo: str
@@ -171,44 +111,24 @@ class PySCFPBCInterface(QMInterface):
     embedding: bool = field(default=False, init=False)
 
     def electrostatic_coupling_mode(self) -> ElectrostaticCouplingMode:
-        """Keep electrostatic coupling inside this interface.
-
-        Like VASP, this interface owns the whole electrostatic
-        coupling, including the term acting on its own nuclei.
-        """
+        """Own both electronic and nuclear QM/MM coupling."""
         return ElectrostaticCouplingMode.ENGINE
 
     def applies_nuclear_potential(self) -> bool:
-        """This interface couples V_ext to its own nuclei.
-
-        The SCF state adds ``-sum(Z_I V_ext(R_I))`` with the
-        pseudopotential valence charge, so the coupling Hamiltonian must
-        not add its own nuclear term on top.
-
-        Returns:
-            Whether the nuclear term is already applied.
-        """
+        """Return whether this interface already includes nuclear embedding."""
         return self.embedding
 
     def configure_electrostatic_embedding(self, enabled: bool) -> None:
-        """Align the interface with the QM/MM coupling Hamiltonian.
+        """Enable QM/MM electrostatics.
 
-        Args:
-            enabled: Whether the QM/MM Hamiltonian assigns any
-                electrostatic interaction to the QM level of theory.
-
-        Raises:
-            ValueError: If embedding was enabled for a coupling scheme
-                which leaves electrostatics at the MM level.
+        Raises ValueError if active embedding conflicts with MM-only coupling.
         """
         if enabled:
-            # SoftwareInterface is frozen to keep external-engine
-            # handles stable.  This flag is configuration state
-            # finalized while the composite calculator is being built.
+            # Set configuration on the frozen interface during calculator setup.
             object.__setattr__(self, "embedding", True)
         elif self.embedding:
             raise ValueError(
-                "pyscf_pbc embedding conflicts with this QMMMHamiltonian:"
+                "pyscf-pbc embedding conflicts with this QMMMHamiltonian:"
                 " no QM/MM electrostatic interaction is assigned to the QM"
                 " level. Disable embedding or select electrostatic coupling"
                 " to avoid double-counting electrostatics.",
@@ -217,25 +137,22 @@ class PySCFPBCInterface(QMInterface):
     def add_electronic_potential(
             self, potential: ElectronicPotential,
     ) -> None:
-        """Register a potential to fold into the core Hamiltonian.
-
-        Args:
-            potential: The electronic potential to incorporate into QM
-                calculations.
-        """
+        """Register an electronic field, adapting molecular PME to region III only."""
+        # Other electronic fields do not require helPME.
+        if hasattr(potential, "pme"):
+            from pydft_qmmm.potentials.pme_potential import PMEElectronicPotential
+            from .pbc_pme import PeriodicPMEElectronicPotential
+            if isinstance(potential, PMEElectronicPotential) and not isinstance(
+                    potential, PeriodicPMEElectronicPotential,
+            ):
+                potential = PeriodicPMEElectronicPotential(
+                    potential.system, potential.pme_alpha,
+                    potential.pme_gridnumber, potential.pme_spline_order,
+                )
         self.potentials.append(potential)
 
     def nuclear_charges(self) -> NDArray[np.float64]:
-        r"""Get the effective nuclear charges the QM method uses.
-
-        Under a GTH pseudopotential the nucleus carries only the
-        valence charge, so the atomic number would over-count every
-        nuclear term by the core electrons.
-
-        Returns:
-            The valence charges (:math:`e`) of the subsystem I atoms,
-            ordered by ascending system index.
-        """
+        """Return QM valence charges (e), ordered by system index."""
         cell, _ = build_cell(
             self.system, self.basis, self.pseudo, self.ke_cutoff,
             self.mesh, self.charge, self.multiplicity, self.verbose,
@@ -244,17 +161,9 @@ class PySCFPBCInterface(QMInterface):
 
     @system_cache("positions", "charges", "elements", "subsystems", "box")
     def _scf_state(self) -> _SCFState:
-        r"""Converge the embedded periodic SCF.
+        """Converge the periodic SCF; raise RuntimeError on nonconvergence.
 
-        ``energy_nuc`` is deliberately left alone: ``cell.energy_nuc()``
-        is already the correct QM-QM Ewald sum, and the coupling to the
-        MM environment is the separate additive ``nuclear_energy``.
-
-        Returns:
-            The converged state and everything derived alongside it.
-
-        Raises:
-            RuntimeError: If the SCF fails to converge.
+        Keep PySCF's QM-QM Ewald energy and add nuclear embedding separately.
         """
         backend = load_backend(self.device)
         cell, qm_indices = build_cell(
@@ -267,9 +176,6 @@ class PySCFPBCInterface(QMInterface):
         method = solver(cell, kpts=kpts, xc=self.functional)
         method.conv_tol = self.conv_tol
         method.max_cycle = self.max_cycle
-        # Honour output_file/output_interval the way the molecular
-        # interface does: the frame counter decides whether this call is
-        # one of the ones written.
         if self.output_file is not None:
             self.frame[0] += 1
             if self.frame[0] % self.output_interval == 0:
@@ -316,23 +222,14 @@ class PySCFPBCPotential(PySCFPBCInterface, AtomicPotential):
     """A potential wrapping periodic PySCF."""
 
     def compute_energy(self) -> float:
-        r"""Compute the energy of the system.
-
-        Returns:
-            The energy (:math:`\mathrm{kJ\;mol^{-1}}`) of the system.
-        """
+        """Return the embedded QM energy (kJ/mol)."""
         state = self._scf_state()
         return (
             float(state.method.e_tot) + state.nuclear_energy
         ) * KJMOL_PER_EH
 
     def compute_forces(self) -> NDArray[np.float64]:
-        r"""Compute the forces on the system.
-
-        Returns:
-            The forces (:math:`\mathrm{kJ\;mol^{-1}\;\mathring{A}^{-1}}`)
-            acting on atoms in the system.
-        """
+        """Return forces (kJ/mol/Å) in system atom order."""
         from .pbc_forces import mm_forces
         from .pbc_forces import qm_forces
         state = self._scf_state()
@@ -346,12 +243,7 @@ class PySCFPBCPotential(PySCFPBCInterface, AtomicPotential):
         return forces * KJMOL_PER_EH * BOHR_PER_ANGSTROM
 
     def compute_components(self) -> dict[str, float]:
-        r"""Compute the components of the energy.
-
-        Returns:
-            The components of the energy
-            (:math:`\mathrm{kJ\;mol^{-1}}`) of the system.
-        """
+        """Return QM and nuclear embedding energies (kJ/mol)."""
         state = self._scf_state()
         return {
             "Periodic QM Energy": float(state.method.e_tot) * KJMOL_PER_EH,

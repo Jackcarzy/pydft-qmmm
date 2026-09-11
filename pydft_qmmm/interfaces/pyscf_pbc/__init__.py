@@ -5,6 +5,6 @@ from pydft_qmmm.utils import TheoryLevel
 from .pbc_factory import pyscf_pbc_interface_factory as FACTORY
 
 THEORY_LEVEL = TheoryLevel.QM
-NAME = "pyscf_pbc"
+NAME = "pyscf-pbc"
 
 del TheoryLevel

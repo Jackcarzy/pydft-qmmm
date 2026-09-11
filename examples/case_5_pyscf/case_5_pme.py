@@ -1,28 +1,14 @@
-"""QM/MM/PME single point with PySCF.
-
-One water in the SPC/E box of example case 0 is treated by PySCF at
-PBE/def2-SVP; the rest are MM.  Waters within 8 Angstroms form
-subsystem II and enter the QM Hamiltonian as point charges, and
-everything beyond reaches the QM electrons through the particle-mesh
-Ewald reciprocal sum.
-
-PySCF samples that reciprocal potential on the solver's own molecular
-quadrature grid and contracts it into a one-electron operator, and the
-forces it returns are analytic on both sides: the QM atoms feel the
-field, and the MM sites feel the electron density back.
-"""
+"""Molecular PySCF QM/MM/PME single point."""
 from __future__ import annotations
 
 from pydft_qmmm import *
 from pydft_qmmm.plugins import CentroidPartition
 
-# Load system first.
 system = System.load("spce.pdb")
 
-# Define QM Hamiltonian.  `grid_level` sets the quadrature used for both
-# the exchange-correlation and the embedding integrals.
+# grid_level sets the XC and embedding quadrature.
 qm = QMHamiltonian(
-    interface="pyscf",
+    interface="pyscf-mol",
     basis="def2-svp",
     functional="PBE",
     charge=0,
@@ -31,7 +17,6 @@ qm = QMHamiltonian(
     grid_level=5,
 )
 
-# Define MM Hamiltonian.
 mm = MMHamiltonian(
     forcefield=["spce.xml", "spce_residues.xml"],
     nonbonded_method="PME",
@@ -40,20 +25,16 @@ mm = MMHamiltonian(
     pme_alpha=5.0,
 )
 
-# Define IXN Hamiltonian.
 qmmm = QMMMHamiltonian(
     "electrostatic",
     "electrostatic",
     partition=CentroidPartition("all", 8.0),
 )
 
-# Define QM/MM Hamiltonian
 total = qm[:3] + mm[3:] + qmmm
 
-# Build calculator.
 calculator = total.build_calculator(system)
 
-# Run a single point.
 results = calculator.calculate()
 
 print(f"total energy   {results.energy:18.6f} kJ/mol")

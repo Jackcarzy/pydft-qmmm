@@ -1,10 +1,4 @@
-"""SCF-bearing tests for the periodic PySCF interface.
-
-Every test here runs an SCF and belongs on a compute node.  The login
-node has a 4 GB per-user cap and is heavily throttled.  Run with:
-
-    sbatch ../pbc-runs/integration.slurm
-"""
+"""SCF integration tests; submit ../pbc-runs/integration.slurm on a compute node."""
 from __future__ import annotations
 
 import numpy as np
@@ -14,14 +8,11 @@ pytestmark = pytest.mark.slow
 
 
 def test_embedding_shifts_the_energy(pyscf_pbc_embedded_interface):
-    """A charged environment must move the QM energy, and sanely."""
+    """Embedding must shift the energy without a quadrature blowup."""
     interface, bare = pyscf_pbc_embedded_interface
     embedded = interface.compute_energy()
     assert embedded != pytest.approx(bare, abs=1e-6)
-    # An MM environment of ordinary point charges shifts a small QM
-    # region by tens of kJ/mol, not by thousands.  A four-figure shift
-    # is the signature of a quadrature failure, so this bound is a
-    # guard rather than a curiosity: do not widen it to make it pass.
+    # A large shift signals unresolved density quadrature.
     assert abs(embedded - bare) < 1000.0
 
 
@@ -64,12 +55,7 @@ def test_qm_forces_match_central_differences(pyscf_pbc_embedded_interface):
 
 
 def test_pulay_term_is_live(pyscf_pbc_embedded_interface, monkeypatch):
-    """Deleting channel 2 must break the finite-difference agreement.
-
-    Without this guard a silently missing Pulay term looks exactly like
-    a correct implementation: the patched-hcore gradient still runs and
-    still returns plausible numbers.
-    """
+    """Omitting the AO Pulay term must break force/energy agreement."""
     from pydft_qmmm.interfaces.pyscf_pbc import pbc_forces
     interface, _ = pyscf_pbc_embedded_interface
     atom = sorted(interface.system.select("subsystem I"))[0]
@@ -93,17 +79,9 @@ def test_mm_forces_match_central_differences(pyscf_pbc_embedded_interface):
 
 
 def test_embedding_channels_conserve_momentum(pyscf_pbc_embedded_interface):
-    """The embedding this interface adds must exert no net force.
+    """Embedding forces must cancel within grid error.
 
-    Channels 2, 3 and 4 are the QM-MM interaction: the Pulay term, the
-    nuclear term, and the reaction on the static MM charges.  They are
-    internal forces, so they must cancel to machine-ish precision by
-    Newton's third law, and a double count in the exclusion sets would
-    show up here as a large residual.
-
-    Channel 1, PySCF's own periodic gradient, is deliberately excluded.
-    It carries a net force of its own that this interface neither
-    creates nor can remove -- see test_total_force_is_pyscf_s_residual.
+    Exclude PySCF's bare gradient, which has its own grid-dependent residual.
     """
     from pydft_qmmm.interfaces.pyscf_pbc import pbc_forces
     from pydft_qmmm.interfaces.pyscf.pyscf_backend import load_backend
@@ -127,34 +105,15 @@ def test_embedding_channels_conserve_momentum(pyscf_pbc_embedded_interface):
 
 
 def test_total_force_is_pyscf_s_residual(pyscf_pbc_embedded_interface):
-    """The reported net force is the bare periodic gradient's.
-
-    PySCF's gamma-point periodic gradient is not translationally
-    invariant on an under-resolved FFT grid.  On a bare unembedded
-    water cell the residual is 203 kJ/mol/A at ke_cutoff=80 and 0.7 at
-    200 for gth-dzvp, so it is a grid convergence property rather than
-    anything the embedding introduces.  At the fixture's converged
-    cutoff what is left must be small.
-    """
+    """The total force residual must be small at the fixture's FFT cutoff."""
     interface, _ = pyscf_pbc_embedded_interface
     total = interface.compute_forces().sum(axis=0)
     np.testing.assert_allclose(total, np.zeros(3), atol=5.0)
 
 
 def test_cpu_and_gpu_agree(pyscf_pbc_embedded_factory):
-    """Both backends must produce the same physics, not merely run.
-
-    Tolerances come from the Task 1 probe, which measured gpu4pyscf
-    against PySCF on a bare single-k-point KRKS cell: 8.8e-5 Eh
-    (0.23 kJ/mol) on the energy and 1.6e-5 Eh/a0 (0.08 kJ/mol/A) on the
-    gradient.  That gap is gpu4pyscf's grid and screening thresholds
-    rather than roundoff, so it does not shrink with conv_tol.
-    """
-    # Not importorskip: modern pytest re-raises an ImportError that is
-    # not ModuleNotFoundError, and on a CPU node gpu4pyscf fails with
-    # "libcusolver.so.11: cannot open shared object file" -- the package
-    # is present, the CUDA runtime is not.  That is a skip, not a
-    # failure; this test belongs to the gpu-v100 job.
+    """CPU/GPU energies and forces must agree within backend grid tolerances."""
+    # A CPU node may have GPU4PySCF installed but lack CUDA libraries.
     try:
         import gpu4pyscf                                     # noqa: F401
     except ImportError as error:
@@ -172,20 +131,7 @@ def test_cpu_and_gpu_agree(pyscf_pbc_embedded_factory):
 def test_reciprocal_reaction_on_subsystem_iii_is_exact(
         pyscf_pbc_pme_interface,
 ):
-    """Moving a subsystem III atom must reproduce its analytic force.
-
-    This is the reciprocal half of the MM reaction channel, which the
-    non-PME fixtures never exercise because they have no subsystem III.
-    It must source helPME from the WHOLE QM charge distribution --
-    electrons on the grid and valence nuclei as points -- and write only
-    to MM rows: compute_source_forces returns
-    ``-grad(phi) * system.charges`` for every atom, and the QM atoms
-    still carry force-field charges that conservative coupling zeroes
-    inside OpenMM without touching System.charges.
-
-    Sourcing from the electrons alone, or letting the QM rows through,
-    both break this.
-    """
+    """Region III reaction forces must differentiate the full embedding energy."""
     interface = pyscf_pbc_pme_interface
     assert interface.potentials, "fixture must register a PME potential"
     system = interface.system
@@ -195,21 +141,6 @@ def test_reciprocal_reaction_on_subsystem_iii_is_exact(
     np.testing.assert_allclose(analytic, numeric, rtol=1e-4, atol=1e-3)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "KNOWN GAP, not yet root-caused.  With PME active the reported "
-        "QM force is not the derivative of the reported energy: measured "
-        "11.97 kJ/mol/A on a QM atom at the full-calculator level, with a "
-        "residual net force of about 10.  The MM side is exact (see "
-        "test_reciprocal_reaction_on_subsystem_iii_is_exact) and the "
-        "non-PME path is conservative to well under 1, so the missing "
-        "term is on the QM side and involves the QM atoms' own "
-        "force-field charges entering V_rec: PMEExcludedPotential "
-        "supplies that correction for a MOLECULAR QM region, and whether "
-        "it is correct for a PERIODIC one has not been established."
-    ),
-    strict=True,
-)
 def test_pme_qm_force_matches_central_differences(pyscf_pbc_pme_interface):
     """The QM force must differentiate the energy when PME is active."""
     interface = pyscf_pbc_pme_interface

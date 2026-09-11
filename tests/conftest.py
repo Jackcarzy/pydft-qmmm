@@ -292,38 +292,18 @@ def pyscf_water_system():
 
 @pytest.fixture
 def pyscf_pbc_system():
-    """A single QM water in a small periodic box.
-
-    The periodic QM cell is the simulation box itself, so the box is
-    kept small: at ke_cutoff=80 an 8 Angstrom edge is a ~27**3 mesh,
-    where a 12 Angstrom one is over three times the points for no extra
-    coverage of the physics under test.
-    """
+    """A QM water in an 8 Å periodic box."""
     return build_water_system(
         [((4.0, 4.0, 4.0), Subsystem.I)], box_length=8.0,
     )
 
 
 def build_pbc_interface(system, device="cpu", **overrides):
-    """Build a periodic PySCF interface over a system.
-
-    Args:
-        system: The system to tie the interface to.
-        device: Either ``cpu`` or ``gpu``.
-        overrides: Any factory argument to replace.
-
-    Returns:
-        The periodic PySCF interface.
-    """
+    """Build periodic PySCF with optional device and factory overrides."""
     from pydft_qmmm.interfaces.pyscf_pbc.pbc_factory import (
         pyscf_pbc_interface_factory,
     )
-    # ke_cutoff=200 rather than 80.  The FFT grid at 80 gives energies
-    # that look converged but leaves a large residual net force in
-    # PySCF's own periodic gradient: 203 kJ/mol/A for gth-szv and 93
-    # for gth-dzvp, against 5.3 and 0.7 at 200.  A constant-potential
-    # quadrature check cannot see this, because the grid error cancels
-    # when the potential does not vary; only a gradient exposes it.
+    # This cutoff resolves forces; energy convergence alone is insufficient.
     options = dict(
         basis="gth-dzvp",
         pseudo="gth-pbe",
@@ -339,7 +319,7 @@ def build_pbc_interface(system, device="cpu", **overrides):
 
 
 def build_pbc_embedded_system():
-    """A QM water with one subsystem II water in a small periodic box."""
+    """QM and region II waters in an 8 Å box."""
     return build_water_system(
         [
             ((4.0, 4.0, 4.0), Subsystem.I),
@@ -351,11 +331,7 @@ def build_pbc_embedded_system():
 
 @pytest.fixture
 def pyscf_pbc_embedded_factory():
-    """Build an embedded periodic interface on a chosen device.
-
-    Both devices get an identical system, so any difference between
-    them is the backend rather than the input.
-    """
+    """Build the same embedded water system on either device."""
     def build(device="cpu"):
         interface = build_pbc_interface(
             build_pbc_embedded_system(), device=device,
@@ -367,14 +343,7 @@ def pyscf_pbc_embedded_factory():
 
 @pytest.fixture
 def pyscf_pbc_pme_interface():
-    """An embedded interface with subsystem III and a live PME potential.
-
-    pyscf_pbc_embedded_interface has no subsystem III, so it never
-    registers a PMEElectronicPotential and the reciprocal half of V_ext
-    -- and its reaction on the MM sites -- goes entirely unexercised.
-    That gap hid a missing nuclear reaction term in the reciprocal
-    channel, so this fixture exists to close it.
-    """
+    """Build an embedded periodic system with region III and live PME."""
     from pydft_qmmm.potentials.pme_potential import PMEElectronicPotential
     system = build_water_system(
         [
@@ -395,13 +364,7 @@ def pyscf_pbc_pme_interface():
 
 @pytest.fixture
 def pyscf_pbc_embedded_interface(pyscf_pbc_embedded_factory):
-    """An embedded interface, and the same geometry left unembedded.
-
-    The unembedded energy is computed through a separate interface
-    rather than by toggling the flag on this one: the SCF cache keys on
-    the system state, not on the embedding flag, so toggling would
-    return the stale result.
-    """
+    """Return an embedded interface and its separately computed bare energy."""
     interface = pyscf_pbc_embedded_factory("cpu")
     bare = build_pbc_interface(interface.system).compute_energy()
     return interface, bare
@@ -542,7 +505,7 @@ def mm_pyscf_spce():
 @pytest.fixture
 def qm_pyscf_water():
     return QMHamiltonian(
-        interface="pyscf",
+        interface="pyscf-mol",
         basis="sto-3g",
         functional="PBE",
         charge=0,

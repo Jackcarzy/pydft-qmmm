@@ -1,5 +1,5 @@
-Example Case 7 (PySCF on a GPU)
-===============================
+Example Case 7 (pyscf-mol on a GPU)
+==================================
 
 Summary
 -------
@@ -12,14 +12,15 @@ QM region at PBE0/6-31G.  Waters whose centroid lies within 8.0
 Angstroms form subsystem II and enter the QM Hamiltonian as point
 charges; everything beyond reaches it through the reciprocal sum.
 
-The QM region is what makes the device worth choosing.  The integral
-and exchange-correlation work a GPU accelerates grows with the QM
-region, not with the MM environment, so a six-atom complex has more for
-it to do than the single water of case 5.  Selecting the device is a
-single option on the QM Hamiltonian:
+Select the GPU with:
 
 ```python
-qm = QMHamiltonian(interface="pyscf", ..., device="gpu")
+from pydft_qmmm import QMHamiltonian
+
+qm = QMHamiltonian(
+    interface="pyscf-mol", basis="6-31G", functional="PBE0",
+    charge=-1, multiplicity=1, device="gpu",
+)
 ```
 
 How to Run
@@ -29,7 +30,7 @@ GPU4PySCF available in the shell environment:
 
 ```bash
 cd examples/case_7_pyscf_gpu
-~/.conda/envs/pyscf_qmmm/bin/python case_7_gpu.py
+python case_7_gpu.py
 ```
 
 If GPU4PySCF is used from a source checkout, add that checkout to
@@ -38,8 +39,9 @@ CuPy build matching the loaded CUDA runtime.
 
 What to Expect
 --------------
-The GPU total energy, its breakdown by calculator, the timing, and the
-forces on the QM atoms are printed.  On a Tesla V100:
+The script prints energy components, timing, and QM forces. The
+`PySCF` output component uses the `pyscf-mol` engine. A reference run
+on a Tesla V100 produced:
 
 ```
 === device: gpu

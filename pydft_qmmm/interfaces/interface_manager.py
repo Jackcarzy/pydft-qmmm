@@ -1,14 +1,7 @@
-"""Functionality for importing interfaces to external software.
+"""Discover bundled and installed interfaces.
 
-Attributes:
-    DISCOVERED_INTERFACES: A tuple of entry points into the interface
-        architecture of PyDFT-QMMM from installed package metadata.
-    BUNDLED_INTERFACES: The names of the interfaces shipped in this
-        package, in the order they are registered.
-    LOADED_INTERFACES: The loaded interface modules.
-    UNAVAILABLE_INTERFACES: The bundled interfaces that could not be
-        imported, mapped to the reason, so that an engine going missing
-        is diagnosable rather than silent.
+BUNDLED_INTERFACES lists Python module names; LOADED_INTERFACES holds
+loaded modules. UNAVAILABLE_INTERFACES records bundled import failures.
 """
 from __future__ import annotations
 
@@ -49,19 +42,7 @@ UNAVAILABLE_INTERFACES: dict[str, str] = {}
 
 
 def _load_bundled(name: str) -> ModuleType | None:
-    """Import a bundled interface, or skip it if its engine is absent.
-
-    Each interface imports the package it wraps at module scope, so an
-    engine that is not installed would otherwise make `import
-    pydft_qmmm` fail outright.  One tree serves several engines, and no
-    environment is expected to hold all of them at once.
-
-    Args:
-        name: The name of the interface subpackage.
-
-    Returns:
-        The interface module, or None when its engine is unavailable.
-    """
+    """Import a bundled interface, recording missing dependencies."""
     try:
         return importlib.import_module(f"pydft_qmmm.interfaces.{name}")
     except ImportError as exc:
@@ -78,12 +59,7 @@ LOADED_INTERFACES = tuple(
 
 
 def get_interfaces() -> dict[str, tuple[TheoryLevel, Factory]]:
-    """Get PyDFT-QMMM interfaces to external packages.
-
-    Returns:
-        A dictionary of interface theory levels and factory functions
-        indexed by interface name.
-    """
+    """Return interface names mapped to (theory level, factory)."""
     interfaces = dict(
         map(
             lambda y: (y.NAME, (y.THEORY_LEVEL, y.FACTORY)),

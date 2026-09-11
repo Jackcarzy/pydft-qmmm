@@ -25,7 +25,11 @@ Optional QM engines
 ===================
 
 The Psi4 interface is the default for :class:`QMHamiltonian`.  A PySCF
-interface is also bundled, and is installed with the ``pyscf`` extra:
+interface is also bundled, and is installed with the ``pyscf`` extra.
+Select ``interface="pyscf-mol"`` for molecular calculations or
+``interface="pyscf-pbc"`` for periodic calculations.
+
+Install the optional dependencies with:
 
 .. code-block:: bash
 
@@ -39,19 +43,15 @@ wavefunction: there are no k-points, and the periodicity enters only
 through the electrostatic environment that OpenMM and the PME machinery
 provide.
 
-For a genuinely periodic wavefunction, use the separate ``pyscf_pbc``
-interface, in which the QM cell *is* the simulation box.  It differs
-from the molecular one in ways that make it a distinct interface rather
-than a flag: a GTH ``pseudo`` is mandatory and ``ecp`` is rejected,
-because the periodic gradient code refuses all-electron cells;
-``ke_cutoff`` or ``mesh`` replaces ``grid_level``; and the embedding is
-integrated on the solver's uniform FFT grid rather than an atom-centred
-one.  Sampling is a single k-point.
+The ``pyscf-pbc`` interface uses the simulation box as the QM cell.
+It requires a GTH ``pseudo`` and a matching basis; ``ecp`` is unsupported.
+Set ``ke_cutoff`` (Hartree) or ``mesh`` for the uniform FFT grid.
+Sampling is a single k-point.
 
 .. code-block:: python
 
     qm = QMHamiltonian(
-        interface="pyscf_pbc",
+        interface="pyscf-pbc",
         basis="gth-dzvp",
         pseudo="gth-pbe",
         functional="pbe",
@@ -60,16 +60,15 @@ one.  Sampling is a single k-point.
         ke_cutoff=200.0,
     )
 
-Two costs follow from the QM cell being the box.  The box size sets the
-size of the QM calculation, so a large MM box is expensive; and
-``ke_cutoff`` has to be converged against a **force** rather than an
-energy, because the energy settles at a cutoff where the gradient is
-still badly under-resolved.
+Larger boxes increase QM cost. Converge ``ke_cutoff`` against forces;
+energy convergence alone can leave large gradient errors.
+
+For a molecular QM region:
 
 .. code-block:: python
 
     qm = QMHamiltonian(
-        interface="pyscf",
+        interface="pyscf-mol",
         basis="def2-svp",
         functional="PBE0",
         charge=0,
@@ -116,7 +115,7 @@ precision.
 .. code-block:: python
 
     qm = QMHamiltonian(
-        interface="pyscf",
+        interface="pyscf-mol",
         basis="def2-svp",
         charge=0,
         multiplicity=1,
@@ -132,7 +131,7 @@ with it explicitly:
 .. code-block:: python
 
     qm = QMHamiltonian(
-        interface="pyscf",
+        interface="pyscf-mol",
         basis="def2-svp",
         ecp="def2-svp",
         functional="PBE",

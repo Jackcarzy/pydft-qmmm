@@ -1,15 +1,4 @@
-"""Electrostatic embedding for periodic PySCF.
-
-The MM environment reaches the QM electrons as one real-space potential
-sampled on the solver's own uniform FFT grid.  A uniform mesh cannot
-integrate an all-electron density -- during the molecular work a mesh at
-PME resolution integrated an sto-3g water density to 170 electrons
-instead of 10 -- but GTH pseudopotentials remove the nuclear cusps, so
-the uniform grid is adequate here.  This is the same reason the VASP
-interface can use its plane-wave FFT grid, and it is why
-``test_constant_potential_recovers_the_electron_count`` guards this
-module.
-"""
+"""Periodic MM embedding on the pseudopotential solver's uniform FFT grid."""
 from __future__ import annotations
 
 __all__ = [
@@ -33,8 +22,7 @@ from ..pyscf.pyscf_backend import to_numpy
 from ..vasp.grid_potential import poisson_fft
 from ..vasp.grid_potential import spread_gaussian
 
-#: Quadrature points per AO batch.  The AO array is
-#: (nkpts, block, nao) complex, so this bounds peak memory.
+# Bound the (nkpts, block, nao) AO buffer.
 GRID_BLOCK_SIZE = 16384
 
 if TYPE_CHECKING:
@@ -48,20 +36,8 @@ if TYPE_CHECKING:
 def grid_coordinates(
         cell: Any,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    r"""Get the cell's uniform FFT grid.
-
-    Reusing the solver's own grid means the embedding integral and the
-    exchange-correlation integral share one quadrature.
-
-    Args:
-        cell: A built periodic cell.
-
-    Returns:
-        The coordinates (:math:`\mathrm{\mathring{A}}`), shaped
-        ``(ngrids, 3)`` in C order over the mesh, and the uniform
-        quadrature weights (:math:`\mathrm{a_0^3}`).
-    """
-    coords = np.asarray(cell.get_uniform_grids())     # Bohr
+    """Return C-ordered FFT coordinates (Å) and quadrature weights (Bohr³)."""
+    coords = np.asarray(cell.get_uniform_grids())
     weights = np.full(len(coords), cell.vol / len(coords))
     return coords / BOHR_PER_ANGSTROM, weights
 
@@ -73,23 +49,10 @@ def _smeared_potential_grid(
         box: NDArray[np.float64],
         sigma: float,
 ) -> NDArray[np.float64]:
-    r"""The electrostatic potential of smeared point charges.
+    """Return the periodic Gaussian-charge potential on mesh, in volts.
 
-    A point charge cannot be represented on a finite FFT grid, so each
-    is smeared with width sigma and the periodic Poisson equation is
-    solved by FFT.
-
-    Args:
-        positions: An Nx3 array of positions
-            (:math:`\mathrm{\mathring{A}}`).
-        charges: An N array of charges (:math:`e`).
-        mesh: The grid dimensions.
-        box: A 3x3 array whose rows are lattice vectors
-            (:math:`\mathrm{\mathring{A}}`).
-        sigma: The Gaussian width (:math:`\mathrm{\mathring{A}}`).
-
-    Returns:
-        The electrostatic potential on the mesh, in volts.
+    Positions, row lattice vectors in box, and Gaussian width sigma use Å;
+    charges use e.
     """
     rho = spread_gaussian(positions, charges, mesh, box, sigma)
     return poisson_fft(rho, box)
@@ -102,19 +65,10 @@ def near_potential(
         box: NDArray[np.float64],
         sigma: float,
 ) -> NDArray[np.float64]:
-    r"""The subsystem II near field as an electron potential energy.
+    """Return region II's periodic electron potential on mesh, in Hartree.
 
-    Args:
-        system: The system holding positions and static charges.
-        embed_indices: The original system indices of subsystem II.
-        mesh: The grid dimensions.
-        box: A 3x3 array whose rows are lattice vectors
-            (:math:`\mathrm{\mathring{A}}`).
-        sigma: The Gaussian width (:math:`\mathrm{\mathring{A}}`).
-
-    Returns:
-        The potential energy of one electron (:math:`\mathrm{E_h}`) on
-        the mesh.
+    embed_indices selects system atoms. Box vectors and Gaussian width
+    sigma use Å.
     """
     indices = list(embed_indices)
     if not indices:
@@ -122,8 +76,7 @@ def near_potential(
     positions = np.asarray(system.positions)[indices]
     charges = np.asarray(system.charges)[indices]
     volts = _smeared_potential_grid(positions, charges, mesh, box, sigma)
-    # An electron carries charge -1, so its potential ENERGY is the
-    # negative of the electrostatic potential.  Volts -> eV -> Eh.
+    # Electron charge is −1; convert volts to Hartree per electron.
     return -volts * KJMOL_PER_EV / KJMOL_PER_EH
 
 
@@ -134,34 +87,17 @@ def external_potential(
         embed_indices: Sequence[int],
         sigma: float,
 ) -> NDArray[np.float64]:
-    r"""Assemble V_ext on the cell's uniform grid.
+    """Return V_ext (Hartree per electron) on the cell's C-ordered FFT grid.
 
-    The reciprocal half comes from helPME and already excludes
-    ``not subsystem III``; the near-field half covers subsystem II.
-    The two exclusion sets are complementary by construction, and the
-    reaction forces in ``pbc_forces`` must split the same way or the
-    interaction is counted twice.
-
-    Args:
-        system: The system holding positions, charges, and the box.
-        cell: A built periodic cell.
-        potentials: The registered electronic potentials.
-        embed_indices: The original system indices of subsystem II.
-        sigma: The Gaussian width (:math:`\mathrm{\mathring{A}}`).
-
-    Returns:
-        The potential energy of one electron (:math:`\mathrm{E_h}`) at
-        every grid point, shaped ``(ngrids,)``.
+    Combine region III-only PME with region II's periodic Gaussian field
+    of width sigma (Å). Reaction forces must use the same source split.
     """
     coords, _ = grid_coordinates(cell)
     box = np.asarray(system.box, dtype=np.float64)
     mesh = tuple(int(n) for n in cell.mesh)
     total = np.zeros(len(coords))
     for potential in potentials:
-        # compute_potential already returns Eh per electron and already
-        # excludes "not subsystem III".
         total += np.asarray(potential.compute_potential(coords)).reshape(-1)
-    # get_uniform_grids ravels the mesh in C order; so does reshape(-1).
     total += near_potential(
         system, embed_indices, mesh, box, sigma,
     ).reshape(-1)
@@ -176,27 +112,10 @@ def ao_operator(
         weights: NDArray[np.float64],
         potential: NDArray[np.float64],
 ) -> NDArray[np.complex128]:
-    r"""Contract a real-space potential into a one-electron operator.
+    """Return the external AO operator (Hartree), shaped (nkpts, nao, nao).
 
-    This follows the template in ``pbc/df/fft.py`` for turning a
-    real-space potential into an AO matrix: evaluate the AOs on the
-    grid with the lattice sum, then contract against the weighted
-    potential.
-
-    Args:
-        backend: The package providing ``pbc.dft``, i.e. ``pyscf`` or
-            ``gpu4pyscf``, not one of their sub-modules.
-        cell: A built periodic cell.
-        kpts: The k-points, shaped ``(nkpts, 3)``.
-        coords: The quadrature coordinates
-            (:math:`\mathrm{\mathring{A}}`).
-        weights: The quadrature weights (:math:`\mathrm{a_0^3}`).
-        potential: The potential energy of one electron
-            (:math:`\mathrm{E_h}`) at each coordinate.
-
-    Returns:
-        The one-electron operator (:math:`\mathrm{E_h}`), shaped
-        ``(nkpts, nao, nao)``, on the host.
+    backend is pyscf or gpu4pyscf. Coordinates use Å, weights Bohr³,
+    potential Hartree, and kpts inverse Bohr. The result is on the host.
     """
     numint = load_submodule(backend, "pbc.dft.numint")
     nao = cell.nao_nr()

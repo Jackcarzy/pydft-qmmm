@@ -11,7 +11,8 @@ from pydft_qmmm.utils import KJMOL_PER_EH
 def test_pyscf_is_bundled():
     from pydft_qmmm.interfaces import interfaces
     from pydft_qmmm.utils import TheoryLevel
-    assert interfaces["pyscf"][0] is TheoryLevel.QM
+    assert interfaces["pyscf-mol"][0] is TheoryLevel.QM
+    assert "pyscf" not in interfaces
 
 
 def test_missing_pyscf_does_not_break_package(monkeypatch):

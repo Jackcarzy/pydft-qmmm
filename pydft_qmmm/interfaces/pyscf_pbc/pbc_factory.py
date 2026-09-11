@@ -33,40 +33,29 @@ def pyscf_pbc_interface_factory(
         verbose: int = 0,
         **options: Any,
 ) -> pbc_interface.PySCFPBCPotential:
-    r"""Build the interface to periodic PySCF.
+    """Build a periodic PySCF interface.
 
     Args:
-        system: The system which will be tied to the interface.
-        basis: The name of the basis set, which must be a GTH basis.
-        pseudo: The GTH pseudopotential.  Mandatory: the periodic
-            gradient code rejects all-electron cells.
-        charge: The net charge (:math:`e`) of the QM subsystem.
-        multiplicity: The spin multiplicity of the QM subsystem.
-        functional: The exchange-correlation functional, or None for
-            Hartree-Fock.
-        ke_cutoff: The kinetic energy cutoff (:math:`\mathrm{E_h}`)
-            setting the FFT mesh.  Mutually exclusive with mesh.
-        mesh: An explicit FFT mesh.  Mutually exclusive with ke_cutoff.
-        embedding_sigma: The Gaussian width
-            (:math:`\mathrm{\mathring{A}}`) smearing subsystem II point
-            charges onto the grid.
-        device: Either ``cpu`` for PySCF or ``gpu`` for GPU4PySCF.
-        ecp: Rejected.  Present only to give a clear error rather than
-            a confusing one from deep inside a gradient call.
-        output_file: The file PySCF output is written to, or None for
-            standard output.
-        output_interval: The interval at which output is written.
-        conv_tol: The SCF convergence threshold (:math:`\mathrm{E_h}`).
-        max_cycle: The maximum number of SCF iterations.
-        verbose: The PySCF logging verbosity.
-        options: Additional attributes to set on the solver.
-
-    Returns:
-        The periodic PySCF interface.
+        system: Simulation system.
+        basis: GTH basis name.
+        pseudo: Required GTH pseudopotential name.
+        charge: QM charge (e).
+        multiplicity: QM spin multiplicity.
+        functional: XC functional, or None for Hartree-Fock.
+        ke_cutoff: FFT cutoff (Hartree); mutually exclusive with mesh.
+        mesh: FFT dimensions; required if ke_cutoff is absent.
+        embedding_sigma: Region II Gaussian width (Å).
+        device: "cpu" for PySCF or "gpu" for GPU4PySCF.
+        ecp: Unsupported; use pseudo.
+        output_file: Log path, or None for standard output.
+        output_interval: SCF calls between log writes.
+        conv_tol: SCF energy tolerance (Hartree).
+        max_cycle: Maximum SCF iterations.
+        verbose: PySCF logging level.
+        options: Extra solver attributes.
 
     Raises:
-        ValueError: If the configuration cannot describe a periodic
-            calculation this interface supports.
+        ValueError: Unsupported configuration.
     """
     if pseudo is None:
         raise ValueError(
@@ -102,8 +91,6 @@ def pyscf_pbc_interface_factory(
         raise ValueError(f"conv_tol must be positive, got {conv_tol}")
     if max_cycle < 0:
         raise ValueError(f"max_cycle must not be negative, got {max_cycle}")
-    # Fail on an unusable combination here rather than at the first
-    # calculation, which may be many minutes into a run.
     pyscf_backend.resolve_method(None, functional, multiplicity - 1)
     pyscf_backend.load_backend(device)
     return pbc_interface.PySCFPBCPotential(

@@ -72,9 +72,16 @@ def test_force_mixing_exclusion_preserves_energy_without_extra_forces() -> None:
         )
 
 
-def test_vasp_coupling_uses_energy_only_exclusion(spce_system, tmp_path) -> None:
-    """Building VASP force mixing must select the paired force exclusions."""
-    qm = QMHamiltonian(interface="vasp", pp_path=str(tmp_path))
+@pytest.mark.parametrize("engine", ["vasp", "pyscf-pbc"])
+def test_engine_coupling_uses_energy_only_exclusion(
+        spce_system, tmp_path, engine,
+) -> None:
+    """Periodic engines must share the energy-only exclusion correction."""
+    options = ({"pp_path": str(tmp_path)} if engine == "vasp" else {
+        "basis": "gth-dzvp", "pseudo": "gth-pbe", "functional": "pbe",
+        "charge": 0, "multiplicity": 1, "ke_cutoff": 200.,
+    })
+    qm = QMHamiltonian(interface=engine, **options)
     mm = MMHamiltonian(
         interface="openmm",
         forcefield=["tests/data/spce.xml", "tests/data/spce_residues.xml"],

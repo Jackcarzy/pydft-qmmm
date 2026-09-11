@@ -11,9 +11,8 @@ def single_point():
     """Run a QM/MM/PME single point on the GPU."""
     system = System.load("cmc.pdb")
 
-    # Define QM Hamiltonian.
     qm = QMHamiltonian(
-        interface="pyscf",
+        interface="pyscf-mol",
         basis="6-31G",
         functional="PBE0",
         charge=-1,
@@ -23,31 +22,25 @@ def single_point():
         device="gpu",
     )
 
-    # Define MM Hamiltonian.
     mm = MMHamiltonian(
         forcefield=["tip3p_cmc_no_intra.xml", "tip3p_cmc_residues.xml"],
         nonbonded_method="PME",
         nonbonded_cutoff=14.0,
-        # Two grid points per Angstrom of box edge; a coarser
-        # reciprocal mesh than that carries real numerical error.
+        # Keep PME spacing below 0.5 Å.
         pme_gridnumber=80,
         pme_alpha=5.0,
     )
 
-    # Define IXN Hamiltonian.
     qmmm = QMMMHamiltonian(
         "electrostatic",
         "electrostatic",
         partition=CentroidPartition("all", 8.0),
     )
 
-    # Define QM/MM Hamiltonian
     total = qm[:6] + mm[6:] + qmmm
 
-    # Build calculator.
     calculator = total.build_calculator(system)
 
-    # Run a single point.
     start = time.time()
     results = calculator.calculate()
     return system, results, time.time() - start

@@ -38,7 +38,7 @@ Requirements
   [(BSD-3-clause license)](https://opensource.org/licenses/BSD-3-Clause).
 * [OpenMM](https://github.com/openmm/openmm)
   [(OpenMM licenses)](https://github.com/openmm/openmm/blob/master/docs-source/licenses/Licenses.txt).
-* [Psi4](https://github.com/psi4/psi4) >= 1.10
+* A QM engine, such as the default [Psi4](https://github.com/psi4/psi4) >= 1.10
   [(LGPL-3.0 license)](https://opensource.org/license/LGPL-3-0).
 
 ### Configured environments
@@ -50,7 +50,8 @@ requirements.
 | Engine | Engine source |
 | --- | --- |
 | Psi4 |  Psi4 1.11 |
-| PySCF | PySCF 2.14 plus GPU4PySCF |
+| `pyscf-mol` | PySCF 2.14; GPU4PySCF for GPU calculations |
+| `pyscf-pbc` | PySCF 2.14 periodic solver; GPU4PySCF for GPU calculations |
 | VASP | External `vasp_std` 6.6.1 executable plus the Python plugin |
 | SPARC | `sparc-x-api` plus an external `sparc` executable |
 
@@ -117,9 +118,56 @@ cd pydft-qmmm
 pip install .
 ```
 
-Optional engines and features are installed with extras, for example the
-PySCF interface with QM/MM/PME support:
+Install both PySCF interfaces with QM/MM/PME support from this checkout:
 
 ```bash
-python -m pip install 'pydft_qmmm[pyscf,qmmm-pme]'
+python -m pip install '.[pyscf,qmmm-pme]'
 ```
+
+PySCF engines
+-------------
+
+Select `pyscf-mol` for a molecular QM region or `pyscf-pbc` for a periodic
+QM wavefunction. The old engine names `pyscf` and `pyscf_pbc` are not
+accepted; the installation extra remains `pyscf`.
+
+| Setting | `pyscf-mol` | `pyscf-pbc` |
+|---|---|---|
+| QM model | Molecule in a periodic MM environment | Periodic QM cell matching the simulation box |
+| Basis/core treatment | Molecular basis; explicit `ecp` when needed | GTH basis and required `pseudo`; no `ecp` |
+| Integration grid | Molecular quadrature: `grid_level` | Uniform FFT grid: `ke_cutoff` or `mesh` |
+| Region II | Point charges | Full periodic Gaussian field |
+| Region III | Molecular PME with local exclusions | Region III-only reciprocal PME field |
+
+```python
+from pydft_qmmm import QMHamiltonian
+
+qm_mol = QMHamiltonian(
+    interface="pyscf-mol", basis="def2-svp", functional="pbe",
+    charge=0, multiplicity=1, grid_level=5,
+)
+qm_pbc = QMHamiltonian(
+    interface="pyscf-pbc", basis="gth-dzvp", pseudo="gth-pbe",
+    functional="pbe", charge=0, multiplicity=1,
+    ke_cutoff=200.0, embedding_sigma=0.3,
+)
+```
+
+Both engines default to `device="cpu"`. Set `device="gpu"` with GPU4PySCF
+and a compatible CUDA/CuPy environment. GPU4PySCF is installed separately.
+
+For `pyscf-pbc`, `ke_cutoff` uses Hartree and `embedding_sigma` uses Å.
+Supply either `ke_cutoff` or `mesh`, and converge forces as well as energies.
+Only Gamma-point sampling is supported; stress is unavailable. Regions I
+and II are removed from PME sources, so empty III gives zero reciprocal field.
+
+The examples include MM setup and electrostatic coupling. Run each script
+from its example directory.
+
+| Example | Engine | System |
+|---|---|---|
+| [Case 4](examples/case_4_vasp) | `vasp` | Periodic QM water with PAW embedding |
+| [Case 5](examples/case_5_pyscf) | `pyscf-mol` | QM water in SPC/E water |
+| [Case 6](examples/case_6_pyscf_ecp) | `pyscf-mol` | Iodide with an ECP |
+| [Case 7](examples/case_7_pyscf_gpu) | `pyscf-mol`, GPU | Chloromethane–chloride complex in TIP3P water |
+| [Case 8](examples/case_8_pyscf_pbc) | `pyscf-pbc` | Periodic QM water in a 12 Å SPC/E box |

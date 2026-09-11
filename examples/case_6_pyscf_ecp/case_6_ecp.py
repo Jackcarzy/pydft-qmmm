@@ -5,13 +5,11 @@ from __future__ import annotations
 from pydft_qmmm import *
 from pydft_qmmm.plugins import CentroidPartition
 
-# Load system first.
 system = System.load("iodide_spce.pdb")
 
-# Define QM Hamiltonian.  Pairing `basis` with `ecp` is what Psi4 does
-# for itself when it loads a basis that defines one.
+# Set both basis and ECP for the heavy atom.
 qm = QMHamiltonian(
-    interface="pyscf",
+    interface="pyscf-mol",
     basis="def2-svp",
     ecp="def2-svp",
     functional="PBE",
@@ -21,7 +19,6 @@ qm = QMHamiltonian(
     grid_level=5,
 )
 
-# Define MM Hamiltonian.
 mm = MMHamiltonian(
     forcefield=["iodide_spce.xml", "iodide_residues.xml"],
     nonbonded_method="PME",
@@ -30,20 +27,17 @@ mm = MMHamiltonian(
     pme_alpha=5.0,
 )
 
-# Define IXN Hamiltonian.
 qmmm = QMMMHamiltonian(
     "electrostatic",
     "electrostatic",
     partition=CentroidPartition("all", 8.0),
 )
 
-# Define QM/MM Hamiltonian.  The QM region is the single ion.
+# The ion is the QM region.
 total = qm[:1] + mm[1:] + qmmm
 
-# Build calculator.
 calculator = total.build_calculator(system)
 
-# Run a single point.
 results = calculator.calculate()
 
 qm_potential = [
