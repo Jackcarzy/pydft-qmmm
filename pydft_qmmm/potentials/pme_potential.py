@@ -403,6 +403,17 @@ class PMEExcludedPotential(PMENuclearPotential):
         pme: The helPME-py PME object.
     """
 
+    # Force mixing already removes the matching classical forces.  In
+    # that case the double-counting correction contributes energy only
+    # (Pederson and McDaniel, JCP 161, 034103, Eq. 9).
+    include_forces: bool = True
+
+    def compute_forces(self) -> NDArray[np.float64]:
+        """Differentiate the correction only when its partner forces remain."""
+        if not self.include_forces:
+            return np.zeros_like(self.system.positions)
+        return super().compute_forces()
+
     def source_charges(self) -> NDArray[np.float64]:
         r"""Get the excluded force-field charges of Subsystem I.
 

@@ -35,6 +35,10 @@ class _Psi4Quadrature:
     coordinates: NDArray[np.float64]
     weights: NDArray[np.float64]
     blocks: tuple[Any, ...]
+    # Psi4 blocks hold non-owning pointers to the grid's coordinate and
+    # weight arrays.  Keep the grid alive so _quadrature_density does not
+    # read freed memory through those pointers.
+    grid: Any
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,7 @@ class Psi4Interface(QMInterface):
                 xyzw[:, :3] / BOHR_PER_ANGSTROM,
                 xyzw[:, 3],
                 grid_blocks,
+                grid,
             )
             v = np.zeros_like(xyzw[:, 0]).reshape(-1, 1)
             for potential in self.potentials:
@@ -174,10 +179,19 @@ class Psi4Interface(QMInterface):
         if quadrature is None:
             raise RuntimeError("no EMBPOT quadrature is available")
         density_matrix = np.asarray(wfn.Da()) + np.asarray(wfn.Db())
-        points = wfn.V_potential().properties()[0]
+        # The wavefunction's own PointFunctions is sized for the grid
+        # Psi4 built for the SCF, which does not always partition into
+        # the same blocks as the grid EMBPOT was written on.  Pushing
+        # our blocks through it overruns its buffers.  Size a
+        # BasisFunctions for our own grid instead; only PHI is needed.
+        points = psi4.core.BasisFunctions(
+            wfn.basisset(),
+            quadrature.grid.max_points(),
+            quadrature.grid.max_functions(),
+        )
         density = []
         for block in quadrature.blocks:
-            points.compute_points(block)
+            points.compute_functions(block)
             npoints = block.npoints()
             local = np.asarray(
                 block.functions_local_to_global(), dtype=int,

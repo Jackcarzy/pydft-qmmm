@@ -339,6 +339,60 @@ def interpolate_onto_grid(field, shape):
     return out
 
 
+def _cardinal_bspline(x, degree):
+    """Uniform cardinal B-spline with support [0, degree + 1]."""
+    if degree == 0:
+        return ((x >= 0.0) & (x < 1.0)).astype(float)
+    return (
+        x * _cardinal_bspline(x, degree - 1)
+        + (degree + 1 - x) * _cardinal_bspline(x - 1, degree - 1)
+    ) / degree
+
+
+def spline_value_and_gradient(field, cell, points):
+    """Periodic quintic B-spline value and its Cartesian derivative.
+
+    A periodic FFT prefilter converts grid samples to spline coefficients.
+    Each target then uses only 6**3 coefficients, instead of summing every
+    Fourier mode. Values and gradients use the SAME interpolant, so the
+    nuclear force remains the derivative of the nuclear interaction energy.
+    This approximates the spectral field; grid convergence is still needed.
+    Only NumPy is required by the embedded VASP interpreter.
+    """
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    if not len(points):
+        return np.zeros(0), np.zeros((0, 3))
+    shape = np.asarray(field.shape)
+    coefficients_g = np.fft.rfftn(field)
+    # Samples of the centered quintic spline are [1, 26, 66, 26, 1]/120.
+    for axis, size in enumerate(shape):
+        frequency = (np.fft.rfftfreq(size) if axis == 2
+                     else np.fft.fftfreq(size))
+        angle = 2.0 * np.pi * frequency
+        response = (66 + 52 * np.cos(angle) + 2 * np.cos(2 * angle)) / 120
+        dimensions = [1, 1, 1]
+        dimensions[axis] = len(response)
+        coefficients_g /= response.reshape(dimensions)
+    coefficients = np.fft.irfftn(coefficients_g, s=field.shape, axes=(0, 1, 2))
+    inverse = np.linalg.inv(cell)
+    scaled = ((points @ inverse) % 1.0) * shape
+    nodes = np.floor(scaled).astype(int)[..., None] + np.arange(-2, 4)
+    x = scaled[..., None] - nodes + 3.0
+    weights = _cardinal_bspline(x, 5)
+    derivatives = _cardinal_bspline(x, 4) - _cardinal_bspline(x - 1, 4)
+    nodes %= shape[None, :, None]
+    values = np.empty(len(points))
+    gradients = np.empty((len(points), 3))
+    for index in range(len(points)):
+        block = coefficients[np.ix_(*nodes[index])]
+        values[index] = np.einsum("ijk,i,j,k->", block, *weights[index])
+        for axis in range(3):
+            factors = list(weights[index])
+            factors[axis] = derivatives[index, axis]
+            gradients[index, axis] = np.einsum("ijk,i,j,k->", block, *factors)
+    return values, (gradients * shape) @ inverse.T
+
+
 def spectral_value_and_gradient(field, cell, points):
     """Evaluate a periodic grid field and its gradient at points.
 

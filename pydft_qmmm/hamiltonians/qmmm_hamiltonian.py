@@ -274,6 +274,9 @@ class QMMMHamiltonian(CouplingHamiltonian):
                     pme_alpha,
                     pme_gridnumber,
                     pme_spline_order,
+                    include_forces=(
+                        capability is not ElectrostaticCouplingMode.ENGINE
+                    ),
                 )
                 pme_calculators.append(
                     PotentialCalculator(system, pme_exclusion),

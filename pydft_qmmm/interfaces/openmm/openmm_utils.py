@@ -417,11 +417,11 @@ def _exclude_lennard_jones(
     for force in nonbonded_forces:
         for i in atoms:
             q, s, e = force.getParticleParameters(i)
-            force.setParticleParameters(i, q, s/s._value, e*0)
+            force.setParticleParameters(i, q, 1.*s.unit, e*0)
         for i in range(force.getNumExceptions()):
             *p, q, s, e = force.getExceptionParameters(i)
             if set(p) & atoms:
-                force.setExceptionParameters(i, *p, q, s/s._value, e*0)
+                force.setExceptionParameters(i, *p, q, 1.*s.unit, e*0)
 
 
 def _exclude_custom_nonbonded(
