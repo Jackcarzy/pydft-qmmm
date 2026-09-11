@@ -50,10 +50,10 @@ requirements.
 | Engine | Engine source |
 | --- | --- |
 | Psi4 |  Psi4 1.11 |
-| `pyscf-mol` | PySCF 2.14; GPU4PySCF for GPU calculations |
-| `pyscf-pbc` | PySCF 2.14 periodic solver; GPU4PySCF for GPU calculations |
-| VASP | External `vasp_std` 6.6.1 executable plus the Python plugin |
-| SPARC | `sparc-x-api` plus an external `sparc` executable |
+| PySCF-mol | PySCF 2.14; GPU4PySCF for GPU calculations |
+| PySCF-pbc | PySCF 2.14 periodic solver; GPU4PySCF for GPU calculations |
+| VASP | External VASP 6.6.1 executable plus the Python plugin |
+| SPARC | sparc-x-api plus an external SPARC executable |
 
 The environment needs these important packages:
 
