@@ -93,24 +93,16 @@ def erfc_near_enabled():
 
 
 def _near_potential(positions, charges, shape, cell, sigma):
-    """v_near on VASP's grid, by whichever route is selected.
-
-    Returns:
-        The potential on `shape`, and a label describing the route for
-        the sentinel file.
-    """
+    """Return v_near on VASP's grid by the selected route."""
     gridnumber = _coarse_near_gridnumber()
     if gridnumber is None:
         return build_external_potential(
             positions, charges, shape, cell, sigma,
-        ), "direct"
+        )
     coarse = build_external_potential(
         positions, charges, (gridnumber,) * 3, cell, sigma,
     )
-    return (
-        interpolate_onto_grid(coarse, shape),
-        f"coarse {gridnumber}**3 -> trilinear",
-    )
+    return interpolate_onto_grid(coarse, shape)
 
 
 def reset_cache():
@@ -157,9 +149,8 @@ def _external_potential(constants):
             from .pme_external import read_pme_data
             alpha = read_pme_data(PME_FILE)[3]
             v_near = erfc_potential(positions, charges, shape, cell, alpha)
-            near_route = f"erfc real-space, alpha = {alpha:.4f} 1/A"
         else:
-            v_near, near_route = _near_potential(
+            v_near = _near_potential(
                 positions, charges, shape, cell, sigma,
             )
         v_ext = v_pme + v_near
@@ -167,12 +158,6 @@ def _external_potential(constants):
         _CACHE["v_ext"] = v_ext
         with open(SENTINEL, "w") as fh:
             fh.write("local_potential callback executed (PME + analytic)\n")
-            fh.write(f"shape_grid   = {shape}\n")
-            fh.write(f"near route   = {near_route}\n")
-            fh.write(f"near charges = {len(charges)}\n")
-            fh.write(f"min V_pme eV = {float(v_pme.min()):.6f}\n")
-            fh.write(f"min V_near eV= {float(v_near.min()):.6f}\n")
-            fh.write(f"min V_ext eV = {float(v_ext.min()):.6f}\n")
         return v_ext
     positions, charges, _, sigma = read_mm_charges(CHARGE_FILE)
     net_charge = float(np.sum(charges)) if len(charges) else 0.0
@@ -186,30 +171,11 @@ def _external_potential(constants):
             RuntimeWarning,
             stacklevel=2,
         )
-    v_ext, near_route = _near_potential(positions, charges, shape, cell, sigma)
+    v_ext = _near_potential(positions, charges, shape, cell, sigma)
     _CACHE["shape"] = shape
     _CACHE["v_ext"] = v_ext
     with open(SENTINEL, "w") as fh:
         fh.write("local_potential callback executed\n")
-        fh.write(f"shape_grid   = {shape}\n")
-        fh.write(f"near route   = {near_route}\n")
-        fh.write(f"mm_charges   = {len(charges)}\n")
-        fh.write(f"net_charge   = {net_charge:.6f}\n")
-        fh.write(f"sigma        = {sigma}\n")
-        fh.write(f"min V_ext eV = {float(v_ext.min()):.6f}\n")
-        fh.write(f"mean V_ext   = {float(v_ext.mean()):.3e}  (G=0 dropped)\n")
-        # M3 probe: are the potentials VASP hands us actually populated?
-        for name in ("charge_density", "hartree_potential", "ion_potential"):
-            field = getattr(constants, name, None)
-            if field is None:
-                fh.write(f"{name:13s}= None\n")
-            else:
-                array = np.asarray(field)
-                fh.write(
-                    f"{name:13s}= shape {array.shape} "
-                    f"min {float(array.min()):.4e} "
-                    f"max {float(array.max()):.4e}\n",
-                )
     return v_ext
 
 
@@ -274,21 +240,6 @@ def force_and_stress(constants, additions):
             with open(NET_FORCE_FILE, "w") as fh:
                 fh.write(f"{len(positions)}\n")
                 fh.write(f"{net[0]:.12e} {net[1]:.12e} {net[2]:.12e}\n")
-                # Recorded for diagnosis: if the driver's restored net
-                # ever disagrees with -sum(F_MM), these two lines say
-                # which half moved.
-                raw = np.asarray(constants.forces, dtype=np.float64)
-                fh.write(
-                    "# vasp_own  "
-                    f"{raw.sum(axis=0)[0]:.12e} {raw.sum(axis=0)[1]:.12e} "
-                    f"{raw.sum(axis=0)[2]:.12e}\n",
-                )
-                fh.write(
-                    "# nuclear   "
-                    f"{nuclear.sum(axis=0)[0]:.12e} "
-                    f"{nuclear.sum(axis=0)[1]:.12e} "
-                    f"{nuclear.sum(axis=0)[2]:.12e}\n",
-                )
         # The QM->MM back-reaction.
         phi_qm = electrostatic_potential_from_vasp(
             _CACHE.get("hartree"), _CACHE.get("ion"),
