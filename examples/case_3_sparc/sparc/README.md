@@ -11,11 +11,11 @@ uses ``QMMMHamiltonian("mechanical", "mechanical")`` — SPARC sees only
 the QM atoms; QM/MM coupling is the MM force field acting between
 QM and MM atoms.
 
-Note: the SPARC interface in PyDFT-QMMM only supports mechanical
-embedding.  Electrostatic embedding (point-charge embedding or
-QM/MM/PME) raises ``NotImplementedError`` because SPARC-X-API does not
-expose a way to inject external point charges or to set a non-zero
-total system charge.
+Note: this example uses mechanical embedding for simplicity, but the
+SPARC interface also supports electrostatic embedding (point-charge
+embedding and QM/MM/PME) when built against the ``qmmm-embedding``
+branch of the SPARC fork.  See ``../sparc_electrostatic/`` for that
+example, and that fork's ``QMMM.md`` for background.
 
 Requirements
 ------------

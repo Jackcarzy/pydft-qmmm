@@ -10,20 +10,20 @@ import warnings
 
 import numpy as np
 
-from .grid_potential import EPS0
-from .grid_potential import KJMOL_PER_EV
-from .grid_potential import build_external_potential
-from .grid_potential import contract_gaussian_gradient
-from .grid_potential import electron_interaction_energy
-from .grid_potential import electrostatic_potential_from_vasp
-from .grid_potential import erfc_potential
-from .grid_potential import gradient_at
-from .grid_potential import interpolant_gradient_at
-from .grid_potential import interpolate_at
-from .grid_potential import interpolate_onto_grid
-from .grid_potential import read_mm_charges
-from .grid_potential import spectral_value_and_gradient
-from .grid_potential import spline_value_and_gradient
+from pydft_qmmm.embedding.grid_potential import EPS0
+from pydft_qmmm.embedding.grid_potential import KJMOL_PER_EV
+from pydft_qmmm.embedding.grid_potential import build_external_potential
+from pydft_qmmm.embedding.grid_potential import contract_gaussian_gradient
+from pydft_qmmm.embedding.grid_potential import electron_interaction_energy
+from pydft_qmmm.embedding.grid_potential import electrostatic_potential_from_vasp
+from pydft_qmmm.embedding.grid_potential import erfc_potential
+from pydft_qmmm.embedding.grid_potential import gradient_at
+from pydft_qmmm.embedding.grid_potential import interpolant_gradient_at
+from pydft_qmmm.embedding.grid_potential import interpolate_at
+from pydft_qmmm.embedding.grid_potential import interpolate_onto_grid
+from pydft_qmmm.embedding.grid_potential import read_mm_charges
+from pydft_qmmm.embedding.grid_potential import spectral_value_and_gradient
+from pydft_qmmm.embedding.grid_potential import spline_value_and_gradient
 
 __all__ = [
     "EPS0", "KJMOL_PER_EV", "CHARGE_FILE", "FORCE_FILE",
@@ -136,7 +136,7 @@ def _external_potential(constants):
     if os.path.isfile(PME_FILE):
         # PME path: the driver shipped the whole system and the Ewald
         # parameters, and helPME evaluates on VASP's own grid.
-        from .pme_external import build_pme_potential
+        from pydft_qmmm.embedding.pme_grid import build_pme_potential
         v_pme = build_pme_potential(PME_FILE, shape, cell)
         # In FFT mode PME contains only III; the near field supplies II
         # and its periodic images once.  In erfc mode II remains in PME
@@ -146,7 +146,7 @@ def _external_potential(constants):
             # alpha must be the one the reciprocal sum used, or the two
             # halves do not add up to 1/r.  Take it from the same file
             # build_pme_potential read rather than from a second source.
-            from .pme_external import read_pme_data
+            from pydft_qmmm.embedding.pme_grid import read_pme_data
             alpha = read_pme_data(PME_FILE)[3]
             v_near = erfc_potential(positions, charges, shape, cell, alpha)
         else:

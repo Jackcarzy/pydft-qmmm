@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 from types import SimpleNamespace
 
-from pydft_qmmm.interfaces.vasp.grid_potential import spline_value_and_gradient
-from pydft_qmmm.interfaces.vasp.grid_potential import spectral_value_and_gradient
+from pydft_qmmm.embedding.grid_potential import spline_value_and_gradient
+from pydft_qmmm.embedding.grid_potential import spectral_value_and_gradient
 from pydft_qmmm.interfaces.vasp import vasp_plugin
 
 

@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from pydft_qmmm.embedding.pme_grid import write_pme_data
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
     from typing import Any
@@ -258,50 +260,6 @@ def write_mm_charges(
         fh.write(f"{len(charges)} {step} {sigma:.12e}\n")
         for (x, y, z), q in zip(positions, charges):
             fh.write(f"{x:.12e} {y:.12e} {z:.12e} {q:.12e}\n")
-
-
-def write_pme_data(
-        path: str,
-        positions: NDArray[np.float64],
-        charges: NDArray[np.float64],
-        excluded: Sequence[int],
-        alpha: float,
-        gridnumber: tuple[int, int, int],
-        spline_order: int,
-        step: int,
-) -> None:
-    r"""Write everything the plugin needs to rebuild the PME potential.
-
-    Args:
-        path: The destination file.
-        positions: An Nx3 array of positions
-            (:math:`\mathrm{\mathring{A}}`) for the whole system.
-        charges: An N array of charges (:math:`e`).
-        excluded: Indices whose real-space contribution is removed.
-        alpha: The Ewald splitting parameter
-            (:math:`\mathrm{\mathring{A}^{-1}}`).
-        gridnumber: PME grid points along each lattice edge.
-        spline_order: The B-spline interpolation order.
-        step: A monotonically increasing stamp, as for MM_CHARGES.
-    """
-    positions = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
-    charges = np.asarray(charges, dtype=np.float64).reshape(-1)
-    if len(positions) != len(charges):
-        raise ValueError(
-            f"{len(positions)} positions but {len(charges)} charges.",
-        )
-    excluded = np.asarray(sorted(excluded), dtype=np.int64)
-    if len(excluded) and (excluded[-1] >= len(charges) or excluded[0] < 0):
-        raise ValueError("excluded index out of range.")
-    with open(path, "w") as fh:
-        fh.write(
-            f"{len(charges)} {len(excluded)} {step} {alpha:.12e} "
-            f"{gridnumber[0]} {gridnumber[1]} {gridnumber[2]} "
-            f"{spline_order}\n",
-        )
-        for (x, y, z), q in zip(positions, charges):
-            fh.write(f"{x:.12e} {y:.12e} {z:.12e} {q:.12e}\n")
-        fh.write(" ".join(str(int(i)) for i in excluded) + "\n")
 
 
 def read_mm_forces(

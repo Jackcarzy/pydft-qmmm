@@ -253,6 +253,7 @@ class VaspInterface(QMInterface):
         os.makedirs(self.directory, exist_ok=True)
         potential = self.potentials[0]
         from .vasp_plugin import erfc_near_enabled
+        from pydft_qmmm.embedding.pme_grid import write_pme_data
         charges = np.array(self.system.charges, copy=True)
         if erfc_near_enabled():
             excluded = sorted(self.system.select("subsystem I"))
@@ -262,7 +263,7 @@ class VaspInterface(QMInterface):
         path = os.path.join(self.directory, "PME_DATA")
         if os.path.isfile(path):
             os.remove(path)
-        vasp_utils.write_pme_data(
+        write_pme_data(
             path,
             np.asarray(self.system.positions),
             charges,

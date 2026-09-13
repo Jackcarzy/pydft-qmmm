@@ -215,6 +215,262 @@ def h_constant_field_system():
 
 
 @pytest.fixture
+def sparc_workdir(tmp_path, request):
+    """A scratch directory for SPARC runs.
+
+    Defaults to pytest's tmp_path, which keeps the unit tests hermetic.
+    Under srun, ranks land on compute nodes whose node-local /tmp does
+    not contain a login/build node's tmp_path, and every rank fails to
+    chdir into it, so SPARC dies immediately.  Passing
+    --basetemp=<shared storage path> on the pytest command line fixes
+    this for the whole run; PYDFT_QMMM_SPARC_TESTDIR is a second,
+    fixture-level guarantee for anyone who forgets that flag.
+    """
+    root = os.environ.get("PYDFT_QMMM_SPARC_TESTDIR")
+    if root:
+        directory = pathlib.Path(root) / request.node.name / "sparc_workdir"
+        directory.mkdir(parents=True, exist_ok=True)
+    else:
+        directory = tmp_path / "sparc_workdir"
+        directory.mkdir()
+    return str(directory)
+
+
+@pytest.fixture
+def sparc_plain(spce_qmmm_system, sparc_workdir):
+    """A SPARC potential with embedding switched off."""
+    from pydft_qmmm.interfaces.sparc.sparc_factory import (
+        sparc_interface_factory,
+    )
+    return sparc_interface_factory(
+        spce_qmmm_system,
+        directory=sparc_workdir,
+        xc="pbe",
+        fd_grid=(48, 48, 48),
+    )
+
+
+@pytest.fixture
+def sparc_embedded(spce_qmmm_system, sparc_workdir):
+    """A SPARC potential with embedding switched on."""
+    from pydft_qmmm.interfaces.sparc.sparc_factory import (
+        sparc_interface_factory,
+    )
+    return sparc_interface_factory(
+        spce_qmmm_system,
+        directory=sparc_workdir,
+        xc="pbe",
+        fd_grid=(48, 48, 48),
+        embedding=True,
+    )
+
+
+@pytest.fixture
+def mm_spce_water4():
+    """MM Hamiltonian sized for the 12 A water4 box.
+
+    mm_spce_no_lj relies on the defaults in openmm_factory.py
+    (nonbonded_method="PME", nonbonded_cutoff=14 A), which assume the
+    29.9 A spce_qmmm_system.  OpenMM refuses a cutoff greater than half
+    the box size, so on the 12 A water4 box that raises immediately;
+    5.0 A leaves headroom under the 6 A half-box limit.  Leaving
+    nonbonded_method at its "PME" default (rather than the
+    "CutoffPeriodic" the sparc_electrostatic example uses) matters here:
+    sparc_pme_total's QM/MM/PME coupling reads the MM interface's own
+    PME alpha/gridnumber via get_pme_parameters(), which requires
+    exactly one PME NonbondedForce to be present.
+    """
+    return MMHamiltonian(
+        forcefield=[
+            "tests/data/spce_no_lj.xml",
+            "tests/data/spce_residues.xml",
+        ],
+        nonbonded_cutoff=5.0,
+        pme_gridnumber=30,
+        pme_alpha=5.0,
+    )
+
+
+@pytest.fixture
+def water4_system():
+    """A 4-water cluster in a 12 A cell.
+
+    Small enough (12 atoms, 12 A box) for the slow SPARC embedding
+    tests to finish a real SCF cycle in scheduler time, unlike the
+    1152-atom 29.9 A spce_qmmm_system, which never got past one SCF
+    iteration on a 48**3 grid before hitting a wall-clock limit.
+    """
+    return System.load("tests/data/water4.pdb")
+
+
+@pytest.fixture
+def sparc_qmmm_system(water4_system):
+    """water4_system with the first water assigned to subsystem I.
+
+    Subsystem II/III membership for the rest is deliberately left
+    unset here: MMHamiltonian.build_calculator stamps every MM atom to
+    Subsystem.III when the calculator is built, and only a *live*
+    partition plugin -- not partition=None -- promotes any of them
+    back to II at calculate() time.  Assigning II by hand in this
+    fixture would just be silently overwritten the moment the
+    calculator is built, which is exactly the bug this fixture used to
+    hide (see F1 in the review).
+    """
+    system = water4_system
+    for i in range(3):
+        system.subsystems[i] = Subsystem.I
+    return system
+
+
+@pytest.fixture
+def sparc_qm_embedded(sparc_workdir):
+    """A SPARC QM Hamiltonian with embedding on.
+
+    The factory fixtures above return a potential, which is what the
+    configuration tests poke at.  Composing a QM/MM calculator needs a
+    Hamiltonian instead.
+    """
+    from pydft_qmmm import QMHamiltonian
+    fd_points = int(os.environ.get("PYDFT_QMMM_SPARC_FD_POINTS", "151"))
+    return QMHamiltonian(
+        interface="sparc",
+        charge=0,
+        xc="pbe",
+        # 12 A cell / 151 points = 0.15 Bohr mesh spacing. embedding_sigma
+        # (0.3 A) must comfortably exceed that or Gaussian spreading
+        # aliases onto the grid -- see QMMM.md's FD_GRID guidance.  A
+        # coarser 48**3 grid (0.25 A spacing here) was measured to
+        # carry an unembedded net force of ~190 kJ/mol/A on this exact
+        # 4-water geometry, which would swamp the physics assertions
+        # below. PYDFT_QMMM_SPARC_FD_POINTS can override this for mesh
+        # convergence runs.
+        fd_grid=(fd_points, fd_points, fd_points),
+        embedding_sigma=0.3,
+        tol_scf=1e-6,
+        directory=sparc_workdir,
+        embedding=True,
+    )
+
+
+@pytest.fixture
+def sparc_embedded_total(sparc_qmmm_system, sparc_qm_embedded, mm_spce_water4):
+    """SPARC QM + SPCE MM, electrostatic close range, MM long range.
+
+    long_range="mechanical" puts I-III at TheoryLevel.MM, which is
+    SYMMETRIC with III-I (see _LONG_EMBEDDING).  "cutoff" is (NO, MM):
+    subsystem III feels the QM atoms but the QM atoms are masked from
+    feeling III (openmm_interface.zero_forces), so the total energy is
+    not the potential of the total force and a full-energy finite
+    difference cannot match the analytic force.  Upstream works around
+    that by restricting numerical_gradient to components=["Psi4"];
+    using a conservative scheme instead lets the gradient tests below
+    check the whole energy, which is the stronger statement.
+
+    Deliberately shares sparc_pme_total's 2.5 A partition cutoff so
+    that the two fixtures differ in exactly one variable: the
+    long-range treatment ("cutoff" here, "electrostatic" there).  The
+    default CentroidPartition("all", 14.) would put all nine MM atoms
+    in subsystem II and leave III empty, and then
+    test_pme_changes_the_energy would be comparing a 9-Gaussian V_ext
+    against a 3-Gaussian V_ext -- it would pass even if the PME
+    reciprocal sum returned identically zero, which is no evidence
+    about PME at all.
+
+    Both subsystem assertions are checks, not assumptions: an empty II
+    means V_ext is identically zero and the physics tests downstream
+    verify nothing (F1); an empty III means the long-range term has
+    nothing to act on.
+    """
+    from pydft_qmmm import QMMMHamiltonian
+    qmmm = QMMMHamiltonian("electrostatic", "mechanical", cutoff=2.5)
+    total = mm_spce_water4[3:] + sparc_qm_embedded[0:3] + qmmm
+    total.build_calculator(sparc_qmmm_system)
+    qmmm.partition.generate_partition()
+    assert len(sparc_qmmm_system.select("subsystem II")) > 0, (
+        "partition left subsystem II empty -- V_ext would be "
+        "identically zero and the physics tests would verify nothing"
+    )
+    assert len(sparc_qmmm_system.select("subsystem III")) > 0, (
+        "partition left subsystem III empty -- the long-range term "
+        "would have no atoms to act on, and the PME comparison "
+        "against this fixture would be vacuous"
+    )
+    return total
+
+
+@pytest.fixture
+def sparc_newton_total(sparc_qmmm_system, sparc_qm_embedded, mm_spce_water4):
+    """Balanced electrostatic I-II coupling with no subsystem III.
+
+    This fixture isolates the QM/MM action-reaction pair.  The cutoff
+    fixture below deliberately leaves a subsystem III, whose ordinary
+    II-III MM forces make a sum over only I and II non-conservative.
+    """
+    from pydft_qmmm import QMMMHamiltonian
+    qmmm = QMMMHamiltonian("electrostatic", "none", cutoff=14.0)
+    total = mm_spce_water4[3:] + sparc_qm_embedded[0:3] + qmmm
+    total.build_calculator(sparc_qmmm_system)
+    qmmm.partition.generate_partition()
+    assert len(sparc_qmmm_system.select("subsystem II")) > 0
+    assert len(sparc_qmmm_system.select("subsystem III")) == 0
+    return total
+
+
+@pytest.fixture
+def sparc_cutoff_total(sparc_qmmm_system, sparc_qm_embedded, mm_spce_water4):
+    """The matched control for the PME comparisons.
+
+    sparc_embedded_total uses long_range="mechanical" so that the
+    gradient tests can difference the whole energy.  That is the wrong
+    control for "does PME change anything", because "mechanical" leaves
+    base_force_mask[QM] == 1 while "electrostatic" zeroes it -- the two
+    would differ in the QM forces even if the PME reciprocal sum
+    returned zero.  "cutoff" shares "electrostatic"'s mask (both are
+    asymmetric, both zero it), so the ONLY difference against
+    sparc_pme_total is whether subsystem III reaches the QM engine.
+    """
+    from pydft_qmmm import QMMMHamiltonian
+    qmmm = QMMMHamiltonian("electrostatic", "cutoff", cutoff=2.5)
+    total = mm_spce_water4[3:] + sparc_qm_embedded[0:3] + qmmm
+    total.build_calculator(sparc_qmmm_system)
+    qmmm.partition.generate_partition()
+    assert len(sparc_qmmm_system.select("subsystem II")) > 0
+    assert len(sparc_qmmm_system.select("subsystem III")) > 0
+    return total
+
+
+@pytest.fixture
+def sparc_pme_total(sparc_qmmm_system, sparc_qm_embedded, mm_spce_water4):
+    """SPARC QM + SPCE MM under full QM/MM/PME coupling.
+
+    A 2.5 A partition cutoff splits the three MM waters: the nearest
+    (~2.3 A from the QM centroid) lands in subsystem II and is handled
+    by the near-field Gaussian embedding; the other two (~2.7 A) land
+    in subsystem III, which is what the PME reciprocal sum in
+    _write_pme_data actually sums over (it excludes "not subsystem
+    III").  Without this split subsystem III would be empty and the
+    PME test would compare an energy against itself.
+    """
+    from pydft_qmmm import QMMMHamiltonian
+    qmmm = QMMMHamiltonian(
+        "electrostatic", "electrostatic",
+        cutoff=2.5,
+    )
+    total = mm_spce_water4[3:] + sparc_qm_embedded[0:3] + qmmm
+    total.build_calculator(sparc_qmmm_system)
+    qmmm.partition.generate_partition()
+    assert len(sparc_qmmm_system.select("subsystem II")) > 0, (
+        "partition left subsystem II empty -- V_ext would be "
+        "identically zero and the physics tests would verify nothing"
+    )
+    assert len(sparc_qmmm_system.select("subsystem III")) > 0, (
+        "partition left subsystem III empty -- PME would sum over no "
+        "atoms and the PME-vs-plain energy comparison would be vacuous"
+    )
+    return total
+
+
+@pytest.fixture
 def vasp_pme_system(vasp_qmmm_system):
     """QM/MM partition with a real subsystem III, for the PME path.
 

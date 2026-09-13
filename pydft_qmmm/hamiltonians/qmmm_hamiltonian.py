@@ -271,9 +271,9 @@ class QMMMHamiltonian(CouplingHamiltonian):
             ):
                 pme_exclusion = PMEExcludedPotential(
                     system,
-                    pme_alpha,
-                    pme_gridnumber,
-                    pme_spline_order,
+                    self.pme_alpha,
+                    self.pme_gridnumber,
+                    self.pme_spline_order,
                     include_forces=(
                         capability is not ElectrostaticCouplingMode.ENGINE
                     ),

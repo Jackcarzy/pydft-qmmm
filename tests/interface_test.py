@@ -29,11 +29,11 @@ def test_qm_engines_declare_their_electrostatic_owner():
     )
 
 
-def test_sparc_rejects_electrostatic_coupling():
-    """SPARC does not support electrostatic coupling."""
+def test_sparc_owns_electrostatic_coupling():
+    """The SPARC fork owns electronic and nuclear embedding terms."""
     pytest.importorskip("sparc")
     from pydft_qmmm.interfaces.sparc.sparc_interface import SPARCInterface
 
     assert SPARCInterface.electrostatic_coupling_mode(None) is (
-        ElectrostaticCouplingMode.UNSUPPORTED
+        ElectrostaticCouplingMode.ENGINE
     )
