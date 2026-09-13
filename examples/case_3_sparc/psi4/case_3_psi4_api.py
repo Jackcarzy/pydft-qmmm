@@ -4,8 +4,7 @@ Mirrors ``case_3_sparc`` but with Psi4 (PBE) as the QM engine, so the
 two runs can be compared directly.  System: 4-water cluster in a 12 Å
 periodic box; water 1 (atoms 0-2) is QM, waters 2-4 (atoms 3-11) are
 SPC/E MM.  Mechanical embedding is used for both close- and long-range
-coupling (matching the SPARC example, which only supports mechanical
-embedding).
+coupling. SPARC also has a separate electrostatic-embedding example.
 """
 from __future__ import annotations
 
@@ -20,8 +19,8 @@ system.velocities = generate_velocities(
     10101,
 )
 
-# Psi4 QM Hamiltonian.  PBE/def2-SVP roughly matches SPARC PBE with
-# h=0.25 in scope (small basis, small grid for a fast demo).
+# Psi4 uses a molecular basis; its numerical accuracy differs from
+# the periodic real-space SPARC calculation.
 qm = QMHamiltonian(
     interface="psi4",
     basis="def2-SVP",

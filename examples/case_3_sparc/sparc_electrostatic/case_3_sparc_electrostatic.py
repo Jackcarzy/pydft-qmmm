@@ -1,65 +1,61 @@
-"""QM/MM electrostatic-embedding example using SPARC for the QM region.
-
-The system is the same 4-water cluster used by the mechanical-embedding
-example next door, so the two are directly comparable, as is the Psi4
-reference in ../psi4/.  The first water (atoms 0-2) is treated by SPARC
-at the PBE level; the remaining three (atoms 3-11) are MM under SPC/E.
-
-Unlike the mechanical case, SPARC sees the MM point charges: they are
-spread as Gaussians onto SPARC's grid and enter its effective potential,
-and the QM electrostatic potential is contracted back against the same
-Gaussians to give the forces on the MM atoms.
-
-Requires a SPARC binary built from the qmmm-embedding branch.  A stock
-SPARC will be detected and rejected rather than silently producing an
-unembedded result.
-"""
+"""QM/MM/PME electrostatic energy and forces for a water in a 12 Å periodic cell."""
 from __future__ import annotations
 
-from pydft_qmmm import *
-from pydft_qmmm.plugins import SETTLE
+import argparse
+from pathlib import Path
 
-system = System.load("water4.pdb")
+from pydft_qmmm import MMHamiltonian, QMHamiltonian, QMMMHamiltonian, System
 
-system.velocities = generate_velocities(system.masses, 300, 10101)
+BOHR_ANGSTROM = 0.529177210903
+HERE = Path(__file__).resolve().parent
 
-# FD_GRID is pinned rather than derived from h, so the driver knows the
-# grid before SPARC runs and can build V_ext on it.
-qm = QMHamiltonian(
-    interface="sparc",
-    charge=0,
-    xc="pbe",
-    fd_grid=(60, 60, 60),
-    kpts=(1, 1, 1),
-    tol_scf=1e-6,
-    directory="./sparc_workdir",
-    embedding=True,
-    embedding_sigma=0.3,
-)
 
-mm = MMHamiltonian(
-    forcefield=["spce.xml", "spce_residues.xml"],
-    nonbonded_method="CutoffPeriodic",
-    nonbonded_cutoff=5.0,
-)
+def build_calculator(workdir):
+    system = System.load(str(HERE / "water4.pdb"))
+    qm = QMHamiltonian(
+        interface="sparc", charge=0, xc="pbe",
+        # h is in Å. The interface pins FD_GRID from the cell dimensions.
+        h=0.12 * BOHR_ANGSTROM,
+        kpts=(1, 1, 1), tol_scf=1e-8,
+        mixing_variable="density", mixing_precond="none", mixing_parameter=0.3,
+        directory=str(workdir), embedding=True, embedding_sigma=0.3,
+    )
+    mm = MMHamiltonian(
+        interface="openmm",
+        forcefield=[str(HERE / "spce.xml"), str(HERE / "spce_residues.xml")],
+        nonbonded_method="PME", nonbonded_cutoff=5.0,
+        pme_gridnumber=(40, 40, 40), pme_alpha=5.0,  # nm⁻¹
+    )
+    qmmm = QMMMHamiltonian(
+        "electrostatic", "electrostatic", cutoff=2.5,
+        pme_alpha=0.5,  # Å⁻¹; OpenMM uses nm⁻¹ below.
+        pme_gridnumber=(40, 40, 40),
+    )
+    total = qm[:3] + mm[3:] + qmmm
+    calculator = total.build_calculator(system)
+    qmmm.partition.generate_partition()
+    return system, calculator
 
-# Electrostatic close range, cutoff long range.  Switch the second
-# argument to "electrostatic" for full QM/MM/PME.
-qmmm = QMMMHamiltonian("electrostatic", "cutoff")
 
-total = qm[:3] + mm[3:] + qmmm
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prepare-only", action="store_true",
+                        help="Build the calculator and check the partition without running SPARC.")
+    parser.add_argument("--workdir", type=Path, default=Path("sparc_workdir"))
+    args = parser.parse_args()
+    system, calculator = build_calculator(args.workdir.resolve())
+    print("SPARC target spacing: 0.12 Bohr; grid: 189³ for this 12 Å cell")
+    for region in ("I", "II", "III"):
+        print(f"subsystem {region}: {len(system.select('subsystem ' + region))} atoms")
+    if args.prepare_only:
+        print("Preparation complete; no SPARC calculation launched.")
+        return
+    results = calculator.calculate()
+    print(f"Total energy: {results.energy:.6f} kJ/mol")
+    print("QM forces (kJ/mol/Å):")
+    for atom in sorted(system.select("subsystem I")):
+        print(f"  atom {atom}: " + " ".join(f"{x:14.6f}" for x in results.forces[atom]))
 
-integrator = VerletIntegrator(1)
-settle = SETTLE()
 
-simulation = Simulation(
-    system=system,
-    hamiltonian=total,
-    integrator=integrator,
-    plugins=[settle],
-    output_directory="output_api/",
-    log_decimal_places=6,
-    csv_decimal_places=6,
-)
-
-simulation.run_dynamics(2)
+if __name__ == "__main__":
+    main()
