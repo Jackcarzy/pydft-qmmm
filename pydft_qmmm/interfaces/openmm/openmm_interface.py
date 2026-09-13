@@ -190,6 +190,15 @@ class OpenMMInterface(MMInterface):
         self.base_context.reinitialize()
         self.base_context.setPositions(omm_pos)
 
+    def get_nonbonded_cutoff(self) -> float:
+        """Return the PME real-space cutoff in Å."""
+        forces = [force for force in self.base_context.getSystem().getForces()
+                  if isinstance(force, openmm.NonbondedForce)
+                  and force.getNonbondedMethod() == openmm.NonbondedForce.PME]
+        if len(forces) != 1:
+            raise TypeError(f"{len(forces)} OpenMM Forces have PME cutoffs")
+        return float(forces[0].getCutoffDistance() / openmm.unit.angstrom)
+
     def get_pme_parameters(self) -> tuple[float, tuple[int, int, int], int]:
         r"""Get the parameters used for PME summation.
 

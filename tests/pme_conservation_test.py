@@ -100,3 +100,49 @@ def test_engine_coupling_uses_energy_only_exclusion(
     ]
     assert len(exclusions) == 1
     assert exclusions[0].include_forces is False
+
+
+def test_periodic_force_mixing_classical_qm_gradient(spce_system, monkeypatch):
+    """Periodic self images, erfc tails, and LJ must match the masked QM force."""
+    import openmm
+    from pydft_qmmm.interfaces.openmm import openmm_factory
+
+    def reference_context(omm_system, modeller):
+        context = openmm.Context(omm_system, openmm.VerletIntegrator(0.001),
+                                 openmm.Platform.getPlatformByName('Reference'))
+        context.setPositions(modeller.positions)
+        return context
+
+    monkeypatch.setattr(openmm_factory, '_build_omm_context', reference_context)
+    qm = QMHamiltonian(interface='pyscf-pbc', basis='gth-dzvp', pseudo='gth-pbe',
+                       functional='pbe', charge=0, multiplicity=1, ke_cutoff=200.)
+    mm = MMHamiltonian(interface='openmm',
+                       forcefield=['tests/data/spce.xml', 'tests/data/spce_residues.xml'],
+                       nonbonded_method='PME', nonbonded_cutoff=7.,
+                       pme_gridnumber=(80, 80, 80), pme_alpha=5.)
+    partition = CentroidPartition('all', 6.)
+    with pytest.warns(RuntimeWarning, match='nonconservative'):
+        coupling = QMMMHamiltonian('electrostatic', 'electrostatic', partition=partition,
+                                   pme_gridnumber=(80, 80, 80), pme_alpha=0.5,
+                                   coupling_mode='force')
+    calculator = (qm[:3] + mm[3:] + coupling).build_calculator(spce_system)
+    partition.generate_partition()
+    classical = [sub.potential for sub in calculator.calculators[1:]]
+    exclusion = next(p for p in classical if isinstance(p, PMEExcludedPotential))
+    assert exclusion.real_space_cutoff == pytest.approx(7.)
+    assert not exclusion.include_forces
+    baseline = np.asarray(spce_system.positions).copy()
+    analytic = -sum(p.compute_forces() for p in classical)[:3]
+    step = 0.000625
+    numerical = np.zeros((3, 3))
+    for atom in range(3):
+        for axis in range(3):
+            pos = baseline.copy(); pos[atom, axis] += step
+            spce_system.positions = pos
+            plus = sum(p.compute_energy() for p in classical)
+            pos = baseline.copy(); pos[atom, axis] -= step
+            spce_system.positions = pos
+            minus = sum(p.compute_energy() for p in classical)
+            numerical[atom, axis] = (plus-minus)/(2*step)
+    spce_system.positions = baseline
+    np.testing.assert_allclose(analytic, numerical, rtol=0, atol=3e-4)

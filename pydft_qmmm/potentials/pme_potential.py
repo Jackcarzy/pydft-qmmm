@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from math import erfc
 
 __all__ = [
     "HelPMEPyInterface",
@@ -407,6 +408,57 @@ class PMEExcludedPotential(PMENuclearPotential):
     # that case the double-counting correction contributes energy only
     # (Pederson and McDaniel, JCP 161, 034103, Eq. 9).
     include_forces: bool = True
+    # Periodic-engine force mixing removes the complete classical QM
+    # electrostatic force. Its energy correction must include the real-space
+    # remainder and count QM-QM periodic interactions only once.
+    real_space_cutoff: float | None = None
+
+    def compute_energy(self) -> float:
+        """Remove retained classical QM electrostatics in force mixing."""
+        energy = super().compute_energy()
+        if self.real_space_cutoff is None:
+            return energy
+        if self.include_forces:
+            raise ValueError("Periodic exclusion correction requires energy-only force mixing")
+        nuclei = sorted(self.system.select("subsystem I"))
+        mm = sorted(self.system.select("subsystem II or subsystem III"))
+        near = self.system.select("subsystem II")
+        positions = np.asarray(self.system.positions)
+        charges = np.asarray(self.system.charges)
+        coords = np.ascontiguousarray(positions[nuclei])
+        q = np.ascontiguousarray(charges[nuclei, None])
+        potential = np.zeros((len(nuclei), 1))
+        self.pme.compute_P_rec(
+            0, helpme_py.MatrixD(q), helpme_py.MatrixD(coords),
+            helpme_py.MatrixD(coords), 0, helpme_py.MatrixD(potential),
+        )
+        self.pme.compute_P_adj(
+            0, helpme_py.MatrixD(q), helpme_py.MatrixD(coords),
+            helpme_py.MatrixD(coords), helpme_py.MatrixD(potential),
+            pme_minimum_image(),
+        )
+        # The inherited -q_I phi(all) counts I-I twice. OpenMM contains
+        # one half q_I phi(I), with direct intramolecular terms excluded.
+        energy += float(0.5 * q[:, 0] @ potential[:, 0])
+        # Base OpenMM retains erfc inside its periodic cutoff. The I-II
+        # Coulomb subtraction plus erf exclusion removes direct erfc for
+        # all II pairs. Cancel the difference, including III real-space tails.
+        box = np.asarray(self.system.box).T
+        for i in nuclei:
+            for j in mm:
+                delta = positions[i] - positions[j]
+                direct = np.linalg.norm(delta)
+                nearest = delta.copy()
+                for axis in (2, 1, 0):
+                    nearest -= box[axis] * np.floor(nearest[axis] / box[axis, axis] + 0.5)
+                distance = np.linalg.norm(nearest)
+                remainder = (erfc(self.pme_alpha * distance) / distance
+                             if distance < self.real_space_cutoff else 0.0)
+                if j in near:
+                    remainder -= erfc(self.pme_alpha * direct) / direct
+                energy -= 1389.3545764438198 * charges[i] * charges[j] * remainder
+        return energy
+
 
     def compute_forces(self) -> NDArray[np.float64]:
         """Differentiate the correction only when its partner forces remain."""

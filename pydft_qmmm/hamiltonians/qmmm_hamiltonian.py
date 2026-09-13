@@ -277,6 +277,11 @@ class QMMMHamiltonian(CouplingHamiltonian):
                     include_forces=(
                         capability is not ElectrostaticCouplingMode.ENGINE
                     ),
+                    real_space_cutoff=(
+                        mm_interface.get_nonbonded_cutoff()
+                        if capability is ElectrostaticCouplingMode.ENGINE
+                        else None
+                    ),
                 )
                 pme_calculators.append(
                     PotentialCalculator(system, pme_exclusion),
