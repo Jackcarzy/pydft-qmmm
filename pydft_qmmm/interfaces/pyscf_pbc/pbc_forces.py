@@ -18,14 +18,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from pydft_qmmm.embedding.grid_potential import contract_gaussian_gradient
+from pydft_qmmm.embedding.grid_potential import poisson_fft
+from pydft_qmmm.embedding.grid_potential import spectral_value_and_gradient
 from pydft_qmmm.utils import BOHR_PER_ANGSTROM
 from pydft_qmmm.utils import KJMOL_PER_EH
 from pydft_qmmm.utils import KJMOL_PER_EV
 from ..pyscf.pyscf_backend import load_submodule
 from ..pyscf.pyscf_backend import to_numpy
-from ..vasp.grid_potential import contract_gaussian_gradient
-from ..vasp.grid_potential import poisson_fft
-from ..vasp.grid_potential import spectral_value_and_gradient
 from .pbc_cell import valence_charges
 from .pbc_embedding import GRID_BLOCK_SIZE
 

@@ -13,6 +13,7 @@ import os
 import warnings
 from dataclasses import dataclass
 from dataclasses import field
+from typing import ClassVar
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -22,6 +23,7 @@ from pydft_qmmm.embedding.grid_potential import build_external_potential
 from pydft_qmmm.embedding.grid_potential import contract_gaussian_gradient
 from pydft_qmmm.interfaces import ElectrostaticCouplingMode
 from pydft_qmmm.interfaces import QMInterface
+from pydft_qmmm.interfaces.engine_embedding import EngineEmbeddingMixin
 from pydft_qmmm.potentials import AtomicPotential
 from pydft_qmmm.utils import KJMOL_PER_EV
 from pydft_qmmm.utils import system_cache
@@ -41,7 +43,7 @@ PME_FILE = "PME_DATA"
 
 
 @dataclass(frozen=True)
-class SPARCInterface(QMInterface):
+class SPARCInterface(EngineEmbeddingMixin, QMInterface):
     r"""A mix-in for storing and manipulating SPARC data types.
 
     Args:
@@ -65,6 +67,20 @@ class SPARCInterface(QMInterface):
             which may have advanced (on a cache miss) or not (on a
             cache hit) since that write.
     """
+    _embedding_conflict_message: ClassVar[str] = (
+        "SPARC embedding=True conflicts with this "
+        "QMMMHamiltonian: no QM/MM electrostatic interaction is "
+        "assigned to the QM level of theory.  Disable embedding "
+        "or select electrostatic coupling to avoid "
+        "double-counting electrostatics."
+    )
+    _embedding_unavailable_message: ClassVar[str] = (
+        "PME embedding needs the SPARC QM/MM fork.  Build the "
+        "potential with embedding=True and point the command "
+        "keyword at a sparc built from the qmmm-embedding "
+        "branch."
+    )
+
     calculator: SPARC
     charge: int
     directory: str
@@ -83,29 +99,6 @@ class SPARCInterface(QMInterface):
         """The SPARC embedding fork owns electronic and nuclear coupling."""
         return ElectrostaticCouplingMode.ENGINE
 
-    def configure_electrostatic_embedding(self, enabled: bool) -> None:
-        """Align the SPARC fork with the QM/MM coupling Hamiltonian.
-
-        Args:
-            enabled: Whether any QM/MM electrostatics are assigned to
-                the QM level of theory.
-
-        Raises:
-            ValueError: If embedding was enabled manually for a coupling
-                scheme that leaves electrostatics at the MM level, which
-                would double-count them.
-        """
-        if enabled:
-            object.__setattr__(self, "embedding", True)
-        elif self.embedding:
-            raise ValueError(
-                "SPARC embedding=True conflicts with this "
-                "QMMMHamiltonian: no QM/MM electrostatic interaction is "
-                "assigned to the QM level of theory.  Disable embedding "
-                "or select electrostatic coupling to avoid "
-                "double-counting electrostatics.",
-            )
-
     def applies_nuclear_potential(self) -> bool:
         """The fork couples V_ext to the pseudocharge itself.
 
@@ -117,23 +110,6 @@ class SPARCInterface(QMInterface):
             Whether the nuclear term is already applied.
         """
         return self.embedding
-
-    def add_electronic_potential(
-            self, potential: ElectronicPotential,
-    ) -> None:
-        """Accept a PME potential to fold into V_ext.
-
-        Args:
-            potential: The electronic potential to incorporate.
-        """
-        if not self.embedding:
-            raise NotImplementedError(
-                "PME embedding needs the SPARC QM/MM fork.  Build the "
-                "potential with embedding=True and point the command "
-                "keyword at a sparc built from the qmmm-embedding "
-                "branch.",
-            )
-        self.potentials.append(potential)
 
     def _cell_angstrom(self) -> NDArray[np.float64]:
         """

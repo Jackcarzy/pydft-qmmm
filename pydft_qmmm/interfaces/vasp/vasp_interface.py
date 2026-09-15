@@ -11,12 +11,14 @@ __all__ = ["VaspInterface", "VaspPotential"]
 import os
 from dataclasses import dataclass
 from dataclasses import field
+from typing import ClassVar
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from pydft_qmmm.interfaces import ElectrostaticCouplingMode
 from pydft_qmmm.interfaces import QMInterface
+from pydft_qmmm.interfaces.engine_embedding import EngineEmbeddingMixin
 from pydft_qmmm.potentials import AtomicPotential
 from pydft_qmmm.utils import KJMOL_PER_EV
 from pydft_qmmm.utils import system_cache
@@ -31,7 +33,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class VaspInterface(QMInterface):
+class VaspInterface(EngineEmbeddingMixin, QMInterface):
     r"""A mix-in for storing and manipulating VASP data types.
 
     Args:
@@ -56,6 +58,18 @@ class VaspInterface(QMInterface):
         frame: The number of calculations performed so far, used to
             decide whether a restart file is available.
     """
+    _embedding_conflict_message: ClassVar[str] = (
+        "VASP embedding=True conflicts with this QMMMHamiltonian: "
+        "no QM/MM electrostatic interaction is assigned to the QM "
+        "level. Disable embedding or select electrostatic coupling "
+        "to avoid double-counting electrostatics."
+    )
+    _embedding_unavailable_message: ClassVar[str] = (
+        "PME embedding needs the VASP Python plugin.  Build the "
+        "potential with embedding=True and a vasp_std compiled "
+        "with -DPLUGINS."
+    )
+
     charge: int
     directory: str
     command: str
@@ -78,35 +92,6 @@ class VaspInterface(QMInterface):
         """Keep electrostatic coupling inside the VASP plugin."""
         return ElectrostaticCouplingMode.ENGINE
 
-    def configure_electrostatic_embedding(self, enabled: bool) -> None:
-        """Align the VASP plugin with the QM/MM coupling Hamiltonian.
-
-        Electrostatic coupling requires VASP's external-potential plugin.
-        Mechanical or absent coupling must not run that plugin, because
-        OpenMM retains those electrostatic interactions and they would be
-        counted twice.
-
-        Args:
-            enabled: Whether any QM/MM electrostatics are assigned to
-                the QM level of theory.
-
-        Raises:
-            ValueError: If embedding was manually enabled for a coupling
-                scheme which leaves electrostatics at the MM level.
-        """
-        if enabled:
-            # SoftwareInterface is frozen to keep its external-engine
-            # handles stable.  This flag is configuration state finalized
-            # while the composite calculator is being built.
-            object.__setattr__(self, "embedding", True)
-        elif self.embedding:
-            raise ValueError(
-                "VASP embedding=True conflicts with this QMMMHamiltonian: "
-                "no QM/MM electrostatic interaction is assigned to the QM "
-                "level. Disable embedding or select electrostatic coupling "
-                "to avoid double-counting electrostatics.",
-            )
-
     def applies_nuclear_potential(self) -> bool:
         """The plugin couples V_ext to the QM nuclei itself.
 
@@ -119,23 +104,6 @@ class VaspInterface(QMInterface):
             electrostatic embedding is switched on.
         """
         return self.embedding
-
-    def add_electronic_potential(
-            self, potential: ElectronicPotential,
-    ) -> None:
-        """Rejects the Psi4-style route (VASP embeds through the plugin instead)
-
-        Args:
-            potential: The electronic potential that would be
-                incorporated into QM calculations.
-        """
-        if not self.embedding:
-            raise NotImplementedError(
-                "PME embedding needs the VASP Python plugin.  Build the "
-                "potential with embedding=True and a vasp_std compiled "
-                "with -DPLUGINS.",
-            )
-        self.potentials.append(potential)
 
     def _write_input(self) -> list[int]:
         """Write the VASP input files for the current QM geometry.

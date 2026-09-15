@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from pydft_qmmm.embedding.grid_potential import spectral_value_and_gradient
 from pydft_qmmm.interfaces import ElectrostaticCouplingMode
 from pydft_qmmm.interfaces import QMInterface
 from pydft_qmmm.potentials import AtomicPotential
@@ -21,7 +22,6 @@ from ..pyscf.pyscf_backend import load_backend
 from ..pyscf.pyscf_backend import load_submodule
 from ..pyscf.pyscf_backend import to_like
 from ..pyscf.pyscf_backend import to_numpy
-from ..vasp.grid_potential import spectral_value_and_gradient
 from .pbc_cell import build_cell
 from .pbc_cell import valence_charges
 from .pbc_embedding import ao_operator
