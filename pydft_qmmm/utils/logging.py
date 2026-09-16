@@ -1,6 +1,5 @@
 """Utilities for logging energies and positions and related types.
 """
-
 from __future__ import annotations
 
 __all__ = [
@@ -167,8 +166,10 @@ class PyDFTQMMMCSVFormatter(logging.Formatter):
         record = cast(EnergyRecord, record)
         flat_components = _flatten_dict(record.energy)
         round_ = "3"
-        if ((formatting := re.search(r"\.(\d+)f", self._style._fmt))
-                is not None):
+        if (
+            (formatting := re.search(r"\.(\d+)f", self._style._fmt))
+            is not None
+        ):
             round_ = formatting.group(1)
         message = ",".join(
             map(lambda x: f"{x:.{round_}f}", flat_components.values()),
@@ -207,8 +208,10 @@ class PyDFTQMMMLogFormatter(logging.Formatter):
                 )
             else:
                 round_ = "3"
-                if ((formatting := re.search(r"\.(\d+)f", self._style._fmt))
-                        is not None):
+                if (
+                    (formatting := re.search(r"\.(\d+)f", self._style._fmt))
+                    is not None
+                ):
                     round_ = formatting.group(1)
                 value = f"{val:.{round_}f} kJ/mol\n"
                 if spaces:

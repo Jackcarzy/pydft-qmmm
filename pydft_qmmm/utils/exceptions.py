@@ -40,16 +40,22 @@ class DependencyImportError(PyDFTQMMMException):
             website: str,
     ) -> None:
         super().__init__(
-            ("Unable to import optional dependency\n  "
-             + textwrap.fill(f"'{dependency}' for {functionality}.")
-             + "\n\n"
-             + textwrap.fill(f"Please check the '{dependency}' project "
-                             "page for installation instructions:")
-             + f"\n\n{website}\n\n"
-             + textwrap.fill(f"If '{dependency}' is no longer "
-                             "maintained, please contact the "
-                             "maintainers of PyDFT-QMMM:")
-             + "\n\nhttps://github.com/johnppederson/pydft-qmmm/issues"),
+            (
+                "Unable to import optional dependency\n  "
+                + textwrap.fill(f"'{dependency}' for {functionality}.")
+                + "\n\n"
+                + textwrap.fill(
+                    f"Please check the '{dependency}' project "
+                    "page for installation instructions:",
+                )
+                + f"\n\n{website}\n\n"
+                + textwrap.fill(
+                    f"If '{dependency}' is no longer "
+                    "maintained, please contact the "
+                    "maintainers of PyDFT-QMMM:",
+                )
+                + "\n\nhttps://github.com/johnppederson/pydft-qmmm/issues"
+            ),
         )
 
 
@@ -62,22 +68,28 @@ class AssetImportError(PyDFTQMMMException, ABC):
 
     def __init__(self, name: str) -> None:
         super().__init__(
-            (f"Unable to import {self.type_} '{name}'.\n\n"
-             + textwrap.fill(f"If the '{name}' {self.type_} is a "
-                             "third-party project, please find the "
-                             "project page on github for "
-                             "installation instructions.  This will "
-                             "most commonly involve cloning the "
-                             "repository, navigating to the repository "
-                             "root directory, and calling `pip install "
-                             ".`, as in the pip documentation:")
-             + "\n\nhttps://packaging.python.org/en/latest/tutorials/"
-             + "installing-packages/#installing-from-a-local-src-tree"
-             + "\n\n"
-             + textwrap.fill(f"If the '{name}' {self.type_} is "
-                             "included as part of PyDFT-QMMM, please "
-                             "contact the maintainers of PyDFT-QMMM:")
-             + "\n\nhttps://github.com/johnppederson/pydft-qmmm/issues"),
+            (
+                f"Unable to import {self.type_} '{name}'.\n\n"
+                + textwrap.fill(
+                    f"If the '{name}' {self.type_} is a "
+                    "third-party project, please find the "
+                    "project page on github for "
+                    "installation instructions.  This will "
+                    "most commonly involve cloning the "
+                    "repository, navigating to the repository "
+                    "root directory, and calling `pip install "
+                    ".`, as in the pip documentation:",
+                )
+                + "\n\nhttps://packaging.python.org/en/latest/tutorials/"
+                + "installing-packages/#installing-from-a-local-src-tree"
+                + "\n\n"
+                + textwrap.fill(
+                    f"If the '{name}' {self.type_} is "
+                    "included as part of PyDFT-QMMM, please "
+                    "contact the maintainers of PyDFT-QMMM:",
+                )
+                + "\n\nhttps://github.com/johnppederson/pydft-qmmm/issues"
+            ),
         )
 
     @property
@@ -135,10 +147,12 @@ class TheoryLevelError(PyDFTQMMMException):
             solution: str = "",
     ) -> None:
         super().__init__(
-            ("Mismatch in expected and received TheoryLevel.\n\n"
-             + textwrap.fill(f"Expected '{correct_theory_level}', but "
-                             f"got '{actual_theory_level}' for "
-                             f"{functionality}.")
-             + "\n\n"
-             + textwrap.fill(f"{solution}")),
+            (
+                "Mismatch in expected and received TheoryLevel.\n\n"
+                + textwrap.fill(f"Expected '{correct_theory_level}', but "
+                                f"got '{actual_theory_level}' for "
+                                f"{functionality}.")
+                + "\n\n"
+                + textwrap.fill(f"{solution}")
+            ),
         )

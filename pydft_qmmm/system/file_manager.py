@@ -155,7 +155,9 @@ def write_to_pdb(name: str, system: System) -> None:
             line += f"{system.positions[i, 0]:8.3f}"
             line += f"{system.positions[i, 1]:8.3f}"
             line += f"{system.positions[i, 2]:8.3f}"
-            line += "  1.00  0.00          "
-            line += f"{system.elements[i]:2s}  \n"
+            # line += "  1.00  0.00          "
+            # line += f"{system.elements[i]:2s}  \n"
+            line += f"{system.charges[i]:6.2f}  0.00          "
+            line += f"{system.elements[i]:>2}  \n"
             fh.write(line)
         fh.write("END")

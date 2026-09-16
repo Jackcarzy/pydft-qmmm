@@ -23,13 +23,13 @@
    {%- endfor %}
    {% endif %}
    {%- endblock %}
-   
+
    {% block function_descriptions %}
    {% if functions %}
    {% for item in functions %}
    .. autofunction:: {{ fullname }}.{{ item }}
    {% endfor %}
-   {% endif %} 
+   {% endif %}
    {% endblock %}
 
    {%- block classes %}

@@ -206,8 +206,10 @@ class PMENuclearPotential(AtomicPotential, HelPMEPyInterface):
         """
         nuclei = sorted(self.system.select("subsystem I"))
         elements = list(ELEMENT_TO_MASS.keys())
-        nuclear_charges = [elements.index(self.system.elements[atom])
-                           for atom in nuclei]
+        nuclear_charges = [
+            elements.index(self.system.elements[atom])
+            for atom in nuclei
+        ]
         return nuclear_charges
 
     @system_cache("subsystems", "positions", "charges")

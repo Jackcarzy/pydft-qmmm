@@ -225,6 +225,10 @@ def _build_omm_system(
     omm_system = omm_forcefield.createSystem(
         omm_modeller.topology,
         rigidWater=False,
+        residueTemplates={
+            res: res.name for res
+            in omm_modeller.topology.residues()
+        },
     )
     return omm_system
 

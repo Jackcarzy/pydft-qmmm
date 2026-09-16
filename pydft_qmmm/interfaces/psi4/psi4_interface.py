@@ -127,6 +127,10 @@ class Psi4Interface(QMInterface):
             net charge, and net spin of atoms in the QM subsystem.
         """
         geometrystring = """\n"""
+        geometrystring += str(self.charge) + " "
+        geometrystring += str(self.multiplicity) + "\n"
+        geometrystring += "symmetry c1\n"
+        geometrystring += "no_reorient\nno_com\n"
         atoms = sorted(self.system.select("subsystem I"))
         for atom in atoms:
             geometrystring = (
@@ -136,11 +140,15 @@ class Psi4Interface(QMInterface):
                 + str(self.system.positions[atom][1]) + " "
                 + str(self.system.positions[atom][2]) + "\n"
             )
-        geometrystring += str(self.charge) + " "
-        geometrystring += str(self.multiplicity) + "\n"
-        # geometrystring += "symmetry c1\n"
-        geometrystring += "noreorient\nnocom\n"
-        return psi4.geometry(geometrystring)
+        molecule = psi4.geometry(geometrystring)
+        c1_molecule = molecule.clone()
+        c1_molecule._initial_cartesian = molecule._initial_cartesian.clone()
+        c1_molecule.set_geometry(c1_molecule._initial_cartesian)
+        c1_molecule.reset_point_group("c1")
+        c1_molecule.fix_orientation(True)
+        c1_molecule.fix_com(True)
+        c1_molecule.update_geometry()
+        return c1_molecule
 
     @system_cache("positions", "charges", "subsystems")
     def _generate_external_potential(self) -> NDArray[np.float64] | None:

@@ -24,8 +24,10 @@ qm = QMHamiltonian(
 
 # Define MM Hamiltonian.
 mm = MMHamiltonian(
-    forcefield=["spcfw.xml",
-                "spcfw_residues.xml"],
+    forcefield=[
+        "spcfw.xml",
+        "spcfw_residues.xml",
+    ],
     nonbonded_method="PME",
     pme_gridnumber=30,
     pme_alpha=5.0,
