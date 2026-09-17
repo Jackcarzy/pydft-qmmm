@@ -34,10 +34,12 @@ def compute_least_mirror(
         j_vector given a set of lattice vectors from a periodic
         triclinic system.
     """
-    r_vector = i_vector - j_vector
-    r_vector -= box[2] * np.floor(r_vector[2]/box[2][2] + 0.5)
-    r_vector -= box[1] * np.floor(r_vector[1]/box[1][1] + 0.5)
-    r_vector -= box[0] * np.floor(r_vector[0]/box[0][0] + 0.5)
+    r_vector = (i_vector - j_vector).reshape(-1, 3)
+    inv_box = np.linalg.inv(box)
+    inv_r_vector = r_vector @ inv_box
+    r_vector -= box[2] * np.floor(inv_r_vector[:, 2] + 0.5)[:, np.newaxis]
+    r_vector -= box[1] * np.floor(inv_r_vector[:, 1] + 0.5)[:, np.newaxis]
+    r_vector -= box[0] * np.floor(inv_r_vector[:, 0] + 0.5)[:, np.newaxis]
     return r_vector
 
 
@@ -105,15 +107,19 @@ def compute_lattice_vectors(
     gamma *= np.pi/180
     vec_a = np.array([[a], [0.], [0.]])
     vec_b = np.array(
-        [[b*np.cos(gamma)],
-         [b*np.sin(gamma)],
-         [0.]],
+        [
+            [b*np.cos(gamma)],
+            [b*np.sin(gamma)],
+            [0.],
+        ],
     )
     c_y = (np.cos(alpha) - np.cos(beta)*np.cos(gamma))/np.sin(gamma)
     vec_c = np.array(
-        [[c*np.cos(beta)],
-         [c*c_y],
-         [np.sqrt(c**2 - (c*np.cos(beta))**2 - (c*c_y)**2)]],
+        [
+            [c*np.cos(beta)],
+            [c*c_y],
+            [np.sqrt(c**2 - (c*np.cos(beta))**2 - (c*c_y)**2)],
+        ],
     )
     box = np.concatenate((vec_a, vec_b, vec_c), axis=1)
     box[box**2 < 1e-12] = 0.

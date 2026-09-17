@@ -25,5 +25,5 @@
    .. automethod:: {{ name }}.{{ item }}
    {% endif %}
    {% endfor %}
-   {% endif %} 
+   {% endif %}
    {% endblock %}

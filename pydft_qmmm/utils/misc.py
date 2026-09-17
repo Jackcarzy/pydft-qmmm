@@ -171,9 +171,8 @@ def residue_partition(
     )
     region_ii: list[int] = []
     for residue in residue_map.values():
-        others = sorted(residue)
-        not_atoms = atoms.isdisjoint(residue)
-        if not_atoms and others:
+        others = sorted(residue - atoms)
+        if others:
             other_reference = other_metric(
                 positions[others, :],
             )

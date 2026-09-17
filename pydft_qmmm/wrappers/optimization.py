@@ -144,7 +144,10 @@ class Optimization(Loggable):
             os.remove(tmp_path)
 
         # Set positions ot the optimized positions.
-        self.system.positions[opt_indices, :] = m.xyzs[-1]
+        self.system.positions[opt_indices, :] = (
+            m.xyzs[-1]
+            - self._offset[opt_indices, :]
+        )
 
     def calculate_energy_forces(self) -> None:
         """Update total system energy and forces on atoms in the system.

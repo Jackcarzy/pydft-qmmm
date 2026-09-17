@@ -114,8 +114,10 @@ VARIABLES = FAST_VARIABLES | SLOW_VARIABLES
 FAST_KEYWORDS = FAST_SELECTORS | FAST_VARIABLES
 SLOW_KEYWORDS = SLOW_SELECTORS | SLOW_VARIABLES
 MATH_KEYWORDS = VARIABLES.keys() | OPERATORS.keys() | FUNCTIONS.keys()
-KEYWORDS = (MATH_KEYWORDS | SELECT_KEYWORDS.keys()
-            | {"(", ")", "not", "within", "of", "same", "as"})
+KEYWORDS = (
+    MATH_KEYWORDS | SELECT_KEYWORDS.keys()
+    | {"(", ")", "not", "within", "of", "same", "as"}
+)
 
 
 def isvalue(text: str) -> bool:
@@ -145,9 +147,11 @@ def decompose(text: str) -> list[str]:
         The atom selection query broken into meaningful parts,
         demarcated by keywords.
     """
-    criteria = (r"(not| or | and |\(|\)|within| of |same| as "
-                + r"".join([rf"|\{x}" for x in OPERATORS.keys()])
-                + r")")
+    criteria = (
+        r"(not| or | and |\(|\)|within| of |same| as "
+        + r"".join([rf"|\{x}" for x in OPERATORS.keys()])
+        + r")"
+    )
     line = [a.strip() for a in re.split(criteria, text)]
     while "" in line:
         line.remove("")
@@ -178,9 +182,11 @@ def line_slice(
     index = start + 1
     while flag and index < len(line):
         count += count_dict.get(line[index], 0)
-        if (count == 0 and line[index] in low_priority
-                # This allows precedence of unary operators.
-                and index > start + 1):
+        if (
+            count == 0 and line[index] in low_priority
+            # This allows precedence of unary operators.
+            and index > start + 1
+        ):
             flag = False
         else:
             index += 1
@@ -268,8 +274,10 @@ def evaluate_math(line: list[str], system: System) -> NDArray[np.float64]:
             value += evaluate_math(line[indices], system)
         else:
             raise ValueError(
-                ("Two incompatable math operators have been placed "
-                 "next to each other in a query."),
+                (
+                    "Two incompatable math operators have been placed "
+                    "next to each other in a query."
+                ),
             )
         count = indices.stop - 1
     else:
@@ -307,8 +315,10 @@ def interpret(line: list[str], system: System) -> frozenset[int]:
     entry = line[count]
     if entry.split(" ")[0].lower() in SELECTORS:
         indices = line_slice(line, count - 1, ["and", "or"])
-        if any([x in MATH_KEYWORDS
-                for x in line[indices]]):
+        if any([
+            x in MATH_KEYWORDS
+            for x in line[indices]
+        ]):
             indices = slice(0, indices.stop)
             selection |= set(
                 np.where(evaluate_math(line[indices], system))[0],
@@ -323,8 +333,10 @@ def interpret(line: list[str], system: System) -> frozenset[int]:
     elif entry in KEYWORDS or isvalue(entry):
         if entry == "(":
             indices = line_slice(line, count, [")"])
-            if all([isvalue(x) or x in MATH_KEYWORDS
-                    for x in line[indices]]):
+            if all([
+                isvalue(x) or x in MATH_KEYWORDS
+                for x in line[indices]
+            ]):
                 indices = line_slice(line, count, ["and", "or"])
                 indices = slice(0, indices.stop)
                 selection |= set(
@@ -334,8 +346,10 @@ def interpret(line: list[str], system: System) -> frozenset[int]:
                 selection |= interpret(line[indices], system)
         elif entry == "not":
             indices = line_slice(line, count, ["and", "or"])
-            new_selection = (frozenset(range(len(system)))
-                             - interpret(line[indices], system))
+            new_selection = (
+                frozenset(range(len(system)))
+                - interpret(line[indices], system)
+            )
             selection |= new_selection
         elif entry == "within":
             # This does not currently support PBC, as in VMD.
@@ -346,13 +360,21 @@ def interpret(line: list[str], system: System) -> frozenset[int]:
             atoms = interpret(line[indices.stop+1:], system)
             measure = np.min(
                 np.linalg.norm(
-                    (system.positions.base[:, np.newaxis, :]
-                     - system.positions[sorted(atoms), :]),
+                    (
+                        system.positions.base[:, np.newaxis, :]
+                        - system.positions[sorted(atoms), :]
+                    ),
                     axis=2,
                 ),
                 axis=1,
             )
-            selection = selection | set(np.where(measure < radius)[0])
+            selection = (
+                selection |
+                {
+                    int(i) for i in
+                    np.where(measure < radius)[0]
+                }
+            )
             indices = line_slice(line, count)
         elif entry == "same":
             attribute = line[count+1]
@@ -367,15 +389,19 @@ def interpret(line: list[str], system: System) -> frozenset[int]:
                 if category[0] != "atoms":
                     population = getattr(system, category[0])
                     atoms = frozenset(
-                        {i for i, x in enumerate(population)
-                         if x in population[sorted(atoms)]},
+                        {
+                            i for i, x in enumerate(population)
+                            if x in population[sorted(atoms)]
+                        },
                     )
             elif attribute.lower() in VARIABLES:
                 var = VARIABLES[attribute.lower()]
                 value = getattr(system, var[0])[(slice(None), *var[1])]
                 atoms = frozenset(
-                    {i for i, x in enumerate(value)
-                     if x in value[sorted(atoms)]},
+                    {
+                        i for i, x in enumerate(value)
+                        if x in value[sorted(atoms)]
+                    },
                 )
             else:
                 raise ValueError(f"Unrecognized attribute '{attribute}'")

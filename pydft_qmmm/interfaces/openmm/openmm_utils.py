@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from warnings import warn
 
 import openmm
 from simtk.unit import elementary_charge
@@ -10,8 +11,13 @@ from simtk.unit import kilojoule_per_mole
 from simtk.unit import nanometer
 
 if TYPE_CHECKING:
+    from typing import Any
+
     import numpy as np
     from numpy.typing import NDArray
+
+
+_EXCEPTIONS_CACHE: dict[int, list[tuple[int, list[Any]]]] = {}
 
 
 def _generate_state(
@@ -479,6 +485,32 @@ def _exclude_custom_nonbonded(
         )
 
 
+def _get_non_zero_exceptions(
+        force: openmm.nonbondedForce,
+) -> list[tuple[int, list[Any]]]:
+    """Get the non-zero exceptions for a NonbondedForce object.
+
+    This function makes use a cache in order to ensure that the
+    exceptions update step is quicker.
+
+    Args:
+        force: The OpenMM NonbondedForce with exceptions to collect.
+
+    Returns:
+        A list of tuples containing non-zero exception indices and
+        their associated parameters.
+    """
+    if (n := force.getForceGroup()) in _EXCEPTIONS_CACHE:
+        return _EXCEPTIONS_CACHE[n]
+    exceptions = []
+    for i in range(force.getNumExceptions()):
+        params = force.getExceptionParameters(i)
+        if params[2]:
+            exceptions.append((i, params))
+    _EXCEPTIONS_CACHE[n] = exceptions
+    return exceptions
+
+
 def _update_exceptions(
         force: openmm.nonbondedForce,
         new_charges: NDArray[np.float64],
@@ -489,16 +521,29 @@ def _update_exceptions(
         force: The OpenMM NonbondedForce with exceptions to update.
         new_charges: The new partial charge (:math:`e`) of the atoms.
     """
-    exceptions = [
-        force.getExceptionParameters(
-            i,
-        ) for i in range(force.getNumExceptions())
-    ]
-    for i, x in enumerate(exceptions):
-        if x[2] / (elementary_charge**2):
-            q0, _, _ = force.getParticleParameters(x[0])
-            q1, _, _ = force.getParticleParameters(x[1])
-            qprod_old = q0 * q1 / (elementary_charge**2)
-            qprod_new = new_charges[x[0]] * new_charges[x[1]]
-            x[2] *= (qprod_new / qprod_old)
-            force.setExceptionParameters(i, *x)
+    for exception in _get_non_zero_exceptions(force):
+        i, params = exception
+        q0, _, _ = force.getParticleParameters(params[0])
+        q1, _, _ = force.getParticleParameters(params[1])
+        qprod_old = q0 * q1 / (elementary_charge**2)
+        qprod_new = new_charges[params[0]] * new_charges[params[1]]
+        if not qprod_old:
+            if qprod_new and not params[2]:
+                warn(
+                    (
+                        f"Either or both of atoms {params[0]} and"
+                        f" {params[1]} were previously set to zero, but"
+                        " both are now nonzero.  These atoms also had a"
+                        " non-zero NonbondedForce exception in OpenMM"
+                        " at the beginning of the simulation; however,"
+                        " a non-zero exception is not recoverable once"
+                        " one or both atoms have been set to zero"
+                        " charge.  Regardless of charge modifications"
+                        " going forward, the Coulomb interaction will"
+                        " remain zero between these atoms."
+                    ),
+                    RuntimeWarning,
+                )
+        else:
+            params[2] *= (qprod_new / qprod_old)
+            force.setExceptionParameters(i, *params)

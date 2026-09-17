@@ -6,9 +6,13 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 from __future__ import annotations
 
-from importlib.metadata import version, PackageNotFoundError
 import os
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version
+
+from sphinx.ext.intersphinx import InventoryAdapter
+from sphinx.util.inventory import _InventoryItem
 sys.path.insert(0, os.path.abspath('..'))
 
 # General settings.
@@ -92,8 +96,6 @@ typehints_defaults = 'comma'
 autosummary_generate = True
 
 # Add custom references to the inventory.
-from sphinx.ext.intersphinx import InventoryAdapter
-from sphinx.util.inventory import _InventoryItem
 
 
 def add_ndarray_alias(app):

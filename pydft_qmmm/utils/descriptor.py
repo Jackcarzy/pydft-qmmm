@@ -16,7 +16,7 @@ from typing import overload
 from typing import TypeVar
 from typing import ParamSpec
 from typing import Concatenate
-from typing import Callable
+from collections.abc import Callable
 
 Class = TypeVar("Class")
 
@@ -62,7 +62,7 @@ class _Descriptor(Generic[Class, P, R], ABC):
 
 def system_cache(
         *attributes: str,
-        obj_is_system: bool = False
+        obj_is_system: bool = False,
 ) -> Callable[[Unbound[Class, P, R]], _Descriptor]:
     """Create a cached method that resets when the system changes.
 
@@ -127,8 +127,10 @@ class _PluggableMethod(_Descriptor):
         """
         if obj is None:
             return self.method
-        if (not hasattr(obj, self.wrapped_name)
-                or self.plugin_no != len(getattr(obj, "_plugins"))):
+        if (
+            not hasattr(obj, self.wrapped_name)
+            or self.plugin_no != len(getattr(obj, "_plugins"))
+        ):
             wrapped = self.wrap(obj, owner)
             self.plugin_no = len(getattr(obj, "_plugins"))
             object.__setattr__(obj, self.wrapped_name, wrapped)

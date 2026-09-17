@@ -20,15 +20,17 @@ qm = QMHamiltonian(
     functional="PBE0",
     charge=-1,
     multiplicity=1,
-    dft_spherical_points = 194,
-    dft_radial_points = 50,
+    dft_spherical_points=194,
+    dft_radial_points=50,
     guess="read",
 )
 
 # Define MM Hamiltonian.
 mm = MMHamiltonian(
-    forcefield=["tip3p_cmc_no_intra.xml",
-                "tip3p_cmc_residues.xml"],
+    forcefield=[
+        "tip3p_cmc_no_intra.xml",
+        "tip3p_cmc_residues.xml",
+    ],
 )
 
 # Define IXN Hamiltonian.

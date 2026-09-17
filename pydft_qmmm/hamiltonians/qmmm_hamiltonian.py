@@ -224,9 +224,7 @@ class QMMMHamiltonian(CouplingHamiltonian):
             ) = mm_interface.get_pme_parameters()
             advisable_gridnumber = np.ceil(
                 compute_lattice_constants(system.box)[0:3],
-                dtype=int,
-                casting='unsafe',
-            ) * 2
+            ).astype(int) * 2
             if self.pme_alpha is None:
                 self.pme_alpha = pme_alpha
             if self.pme_gridnumber is None:

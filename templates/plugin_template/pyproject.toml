@@ -1,14 +1,21 @@
 [project]
-name = "plugin_template"
+name = "plugin-template"
 version = "0.0.0"
 
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
 # This is how PyDFT-QMMM can find the templated plugin, so every
 # local or third-party plugin must have entry_points defined for
 # the key "pydft_qmmm.plugins" with a variable that is assigned the
 # name of the plugin package (it does not matter what the name of
 # the variable is).
-[project.entry-points."pydft_qmmm.plugins"]
-interface = "plugin_template"
+entry-points."pydft_qmmm.plugins".interface = "plugin_template"
 
 [tool.setuptools]
-packages = ["plugin_template"]
+packages = [ "plugin_template" ]
