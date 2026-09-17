@@ -43,17 +43,13 @@ Requirements
 
 ### Configured environments
 
-The following environments and engine installations describe the current
-Georgia Tech setup.  The paths are site-specific and are not general package
-requirements.
-
 | Engine | Engine source |
 | --- | --- |
 | Psi4 |  Psi4 1.11 |
 | PySCF-mol | PySCF 2.14; GPU4PySCF for GPU calculations |
 | PySCF-pbc | PySCF 2.14 periodic solver; GPU4PySCF for GPU calculations |
 | VASP | External VASP 6.6.1 executable plus the Python plugin |
-| SPARC | sparc-x-api plus an external SPARC executable |
+| SPARC-QMMM | sparc-x-api plus an external SPARC-QMMM executable. **⚠ Under development.** |
 
 The environment needs these important packages:
 
@@ -116,10 +112,4 @@ Alternatively, you can clone the repository and install using ``pip``:
 git clone https://github.com/johnppederson/pydft-qmmm
 cd pydft-qmmm
 pip install .
-```
-
-Install both PySCF interfaces with QM/MM/PME support from this checkout:
-
-```bash
-python -m pip install '.[pyscf,qmmm-pme]'
 ```
