@@ -63,6 +63,64 @@ Sampling is a single k-point.
 Larger boxes increase QM cost. Converge ``ke_cutoff`` against forces;
 energy convergence alone can leave large gradient errors.
 
+To embed active QM atoms in a frozen QM density, add ``ksced`` to the same
+periodic interface. This requires the ``pyscf-ksced`` plugin with analytic
+gradients, installed or available through ``PYSCF_EXT_PATH``.
+
+.. code-block:: python
+
+    qm = QMHamiltonian(
+        interface="pyscf-pbc",
+        basis="gth-dzvp",
+        pseudo="gth-pbe",
+        functional="PBE",
+        charge=0,
+        multiplicity=1,
+        mesh=(41, 41, 41),
+        ksced={
+            "active_atoms": [0, 1, 2],
+            "frozen_atoms": [3, 4, 5],
+            "basis_mode": "M",
+            "t_nad": "LDA_K_TF",
+        },
+    )
+    calculator = qm[0:3].build_calculator(system)
+    result = calculator.calculate()
+
+The active and frozen selections must be nonempty and disjoint. Each can be
+a list of system atom indices or a selection string. Only active A belongs
+to subsystem I. Frozen B stays in the MM region and is selected separately
+as the KSCED environment. This keeps B–C interactions in the MM force field;
+there is no frozen-density B–C electrostatic term.
+The outer ``charge`` and ``multiplicity`` describe active A. Frozen B defaults
+to charge 0 and multiplicity 1; set ``frozen_charge`` and
+``frozen_multiplicity`` inside ``ksced`` to change them.
+
+B is converged once and reused as A moves. The returned energy is E_ainb,
+without B's constant self energy. Analytic A forces are placed in full-system
+atom order; B rows are zero. With electrostatic embedding enabled, the energy
+includes A–C electronic and nuclear coupling, and C receives reaction forces.
+B's positions and the simulation box must
+stay fixed. The interface does not constrain an integrator automatically.
+
+This option supports Gamma-point ``basis_mode="M"` with GTH pseudopotentials,
+FFTDF and pure LDA/GGA XC and kinetic functionals, on CPU or GPU using the
+existing ``device`` option. Adding ``sigma`` and ``smearing_method="fermi"``
+to the outer options applies fixed-electron-number smearing to A; its reported
+energy is then the free energy differentiated by the forces. The interface's
+``configure_electrostatic_embedding(True)`` enables the existing periodic
+Gaussian charge field of region II. Added ``PMEElectronicPotential`` fields
+supply region III reciprocal electrostatics. Both source sets exclude frozen B,
+independently of B's II/III assignment. These fields couple only to A's density
+and valence nuclear charges. Arbitrary added fields are rejected because their
+source exclusions and force derivatives cannot be guaranteed.
+
+Configure embedding before the first SCF. The Gaussian near field is periodic,
+with its width set by ``embedding_sigma``; it is not an unsmoothed isolated
+point-charge interaction. The returned components sum to the total energy.
+Full OpenMM assembly still requires excluding A–B force-field terms while
+retaining B–C terms; this interface does not perform that setup or freeze B.
+
 For a molecular QM region:
 
 .. code-block:: python

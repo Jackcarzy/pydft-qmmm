@@ -31,6 +31,7 @@ def pyscf_pbc_interface_factory(
         conv_tol: float = 1e-9,
         max_cycle: int = 100,
         verbose: int = 0,
+        ksced: dict[str, Any] | None = None,
         **options: Any,
 ) -> pbc_interface.PySCFPBCPotential:
     """Build a periodic PySCF interface.
@@ -52,6 +53,7 @@ def pyscf_pbc_interface_factory(
         conv_tol: SCF energy tolerance (Hartree).
         max_cycle: Maximum SCF iterations.
         verbose: PySCF logging level.
+        ksced: Optional frozen-density partition and KSCED settings.
         options: Extra solver attributes.
 
     Raises:
@@ -93,7 +95,13 @@ def pyscf_pbc_interface_factory(
         raise ValueError(f"max_cycle must not be negative, got {max_cycle}")
     pyscf_backend.resolve_method(None, functional, multiplicity - 1)
     pyscf_backend.load_backend(device)
-    return pbc_interface.PySCFPBCPotential(
+    potential = pbc_interface.PySCFPBCPotential
+    extra = {}
+    if ksced is not None:
+        from .pbc_ksced import KSCEDPBCPotential
+        potential = KSCEDPBCPotential
+        extra["ksced"] = ksced
+    return potential(
         system,
         basis,
         pseudo,
@@ -110,4 +118,5 @@ def pyscf_pbc_interface_factory(
         max_cycle,
         verbose,
         dict(options),
+        **extra,
     )

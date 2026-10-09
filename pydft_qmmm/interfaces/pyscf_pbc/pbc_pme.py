@@ -1,6 +1,8 @@
 """Region III reciprocal embedding for a periodic QM cell."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from pydft_qmmm.potentials.pme_potential import PMEElectronicPotential
@@ -8,6 +10,7 @@ from pydft_qmmm.potentials.pme_potential import helpme_py
 from pydft_qmmm.utils import KJMOL_PER_EH
 
 
+@dataclass(frozen=True)
 class PeriodicPMEElectronicPotential(PMEElectronicPotential):
     """Use region III-only reciprocal sources, including periodic images.
 
@@ -15,9 +18,14 @@ class PeriodicPMEElectronicPotential(PMEElectronicPotential):
     Local erf exclusions would leave unwanted I/II image contributions.
     """
 
+    excluded_indices: tuple[int, ...] = ()
+
+    def _source_indices(self):
+        return sorted(set(self.system.select("subsystem III")) - set(self.excluded_indices))
+
     def compute_potential(self, coordinates):
         """Return the region III electron potential in Hartree."""
-        indices = sorted(self.system.select("subsystem III"))
+        indices = self._source_indices()
         potential = np.zeros((len(coordinates), 1))
         if indices:
             self.pme.compute_P_rec(
@@ -39,7 +47,7 @@ class PeriodicPMEElectronicPotential(PMEElectronicPotential):
 
         Columns: potential (kJ/mol/e), then x/y/z derivatives (kJ/mol/e/Å).
         """
-        indices = sorted(self.system.select("subsystem III"))
+        indices = self._source_indices()
         result = np.zeros((len(self.system), 4))
         if indices:
             potential = np.zeros((len(indices), 4))
