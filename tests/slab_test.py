@@ -39,7 +39,7 @@ def test_guards():
         mm_correction(np.zeros((1, 3)), [1.], np.eye(3))
     with pytest.raises(ValueError, match='orthorhombic'):
         coefficient([[8, 1, 0], [0, 8, 0], [0, 0, 24]])
-    with pytest.raises(ValueError, match='neutral QM'):
+    with pytest.warns(RuntimeWarning, match='neutrality residual'):
         qm_dipole(
             np.zeros((4, 4, 4)), np.zeros(
                 (1, 3),
@@ -221,8 +221,12 @@ def test_qm_small_grid_residual_is_not_renormalized():
     assert moment == pytest.approx(expected, abs=1e-12)
     np.testing.assert_array_equal(density, original)
     density[1, 1, 3] = (2.+1e-3)*np.prod(shape)
-    with pytest.raises(ValueError, match='neutral QM'):
-        qm_dipole(density, ions, [1., 1.], cell, origin)
+    original = density.copy()
+    with pytest.warns(RuntimeWarning, match='neutrality residual'):
+        moment = qm_dipole(density, ions, [1., 1.], cell, origin)
+    expected = (ions[:, 2]+origin[2]).sum()-(2.+1e-3)*(3.+origin[2])
+    assert moment == pytest.approx(expected, abs=1e-12)
+    np.testing.assert_array_equal(density, original)
 
 
 def test_qm_self_requires_full_slab_correction():
@@ -291,8 +295,16 @@ def test_qm_neutrality_allowance_scales_with_electron_count():
     density[1, 1, 2] = (4000.+2.3e-4)*np.prod(shape)
     qm_dipole(density, ions, valence, cell, origin)
     density[1, 1, 2] = (4000.+1e-3)*np.prod(shape)
-    with pytest.raises(ValueError, match='neutral QM'):
+    with pytest.warns(RuntimeWarning, match='neutrality residual'):
         qm_dipole(density, ions, valence, cell, origin)
+
+
+@pytest.mark.parametrize('value', [np.nan, np.inf, -np.inf])
+def test_qm_nonfinite_density_still_fails(value):
+    density = np.ones((4, 4, 4))
+    density[0, 0, 0] = value
+    with pytest.raises(ValueError, match='finite QM density'):
+        qm_dipole(density, np.zeros((1, 3)), [1.], np.eye(3), np.zeros(3))
 
 
 @pytest.mark.parametrize(

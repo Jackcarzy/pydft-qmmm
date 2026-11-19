@@ -8,6 +8,7 @@ necessary. No QM self term is added when VASP truncates that interaction.
 from __future__ import annotations
 
 import numpy as np
+from warnings import warn
 
 from .grid_potential import EPS0
 
@@ -66,10 +67,16 @@ def qm_dipole(density, positions, valence, cell, origin):
         QM_NEUTRALITY_TOLERANCE, QM_NEUTRALITY_RELATIVE * np.sum(valence),
     )
     residual = abs(electrons.sum() - np.sum(valence))
-    if not np.isfinite(density).all() or residual > tolerance:
-        raise ValueError(
-            f'Slab correction requires a neutral QM density: '
-            f'electrons={electrons.sum():.12g}, ions={np.sum(valence):.12g}',
+    if not np.isfinite(density).all() or not np.isfinite(residual):
+        raise ValueError('Slab correction requires a finite QM density')
+    if residual > tolerance:
+        warn(
+            f'QM density neutrality residual exceeds the slab tolerance: '
+            f'electrons={electrons.sum():.12g}, ions={np.sum(valence):.12g}, '
+            f'residual={residual:.6g} e, tolerance={tolerance:.6g} e; '
+            'continuing without renormalizing the density.',
+            RuntimeWarning,
+            stacklevel=2,
         )
     return float(
         np.dot(valence, positions[:, 2] + origin[2])
