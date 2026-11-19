@@ -415,6 +415,10 @@ class PMEExcludedPotential(PMENuclearPotential):
     # the real-space remainder and count QM-QM periodic interactions only
     # once; subsystem II and III atoms keep its derivative.
     real_space_cutoff: float | None = None
+    # Original force-mixing design (coupling_mode="force"): subsystem II
+    # and III keep OpenMM's force-field Coulomb from subsystem I, so the
+    # correction is energy only on every atom.
+    mm_forces: bool = True
 
     def compute_energy(self) -> float:
         """Remove retained classical QM electrostatics in force mixing."""
@@ -514,7 +518,7 @@ class PMEExcludedPotential(PMENuclearPotential):
         # A plain array: in-place updates to an observed copy of the
         # positions would notify the interfaces.
         forces = np.zeros(np.shape(self.system.positions))
-        if self.real_space_cutoff is None:
+        if self.real_space_cutoff is None or not self.mm_forces:
             return forces
         # The I-I self term depends on subsystem I alone and is dropped
         # with the other subsystem I forces below.

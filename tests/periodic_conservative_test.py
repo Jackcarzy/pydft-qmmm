@@ -106,6 +106,44 @@ def test_engine_force_mode_keeps_legacy_assembly(water4_system, qm):
     assert mm.aux_forces_group
 
 
+
+@pytest.mark.parametrize("mode", ["conservative", "force"])
+def test_force_mode_subsystem_iii_feels_classical_qm(water4_system, qm, mode, monkeypatch):
+    """Force mode: III gets no QM-density back-reaction and no exclusion forces."""
+    if mode == "force":
+        with pytest.warns(RuntimeWarning, match="nonconservative"):
+            calculator, mm, engine = build(water4_system, qm, "electrostatic", mode)
+    else:
+        calculator, mm, engine = build(water4_system, qm, "electrostatic", mode)
+    if not hasattr(engine, "mm_back_reaction"):
+        pytest.skip("engine has no QM->III back-reaction")
+    assert engine.mm_back_reaction is (mode == "conservative")
+    third = sorted(water4_system.select("subsystem III"))
+    if mode == "force":
+        exclusion = next(c.potential for c in calculator.calculators
+                         if c.name == "PMEExcluded")
+        assert exclusion.mm_forces is False
+        np.testing.assert_array_equal(exclusion.compute_forces(), 0)
+        # OpenMM keeps the force-field charges of I and its forces on III.
+        nonbonded = next(f for f in mm.base_context.getSystem().getForces()
+                         if isinstance(f, openmm.NonbondedForce))
+        assert all(nonbonded.getParticleParameters(a)[0]._value != 0 for a in range(3))
+        np.testing.assert_array_equal(mm.base_force_mask[third], 1)
+    # Engine assembly: PME_FORCES on III only in conservative mode.
+    cls = type(engine)
+    n = len(water4_system)
+    qm_atoms = sorted(water4_system.select("subsystem I"))
+    second = sorted(water4_system.select("subsystem II"))
+    monkeypatch.setattr(cls, "_run", lambda self: (0.0, np.zeros((len(qm_atoms), 3))))
+    monkeypatch.setattr(cls, "_read_mm_forces", lambda self: np.zeros((len(second), 3)))
+    monkeypatch.setattr(cls, "_read_pme_forces", lambda self: np.ones((n, 3)))
+    if hasattr(cls, "_read_qm_net_force"):
+        monkeypatch.setattr(cls, "_read_qm_net_force", lambda self: np.zeros(3))
+    monkeypatch.setattr(cls, "slab_correction", False, raising=False)
+    object.__setattr__(engine, "embedding", True)
+    forces = engine.compute_forces()
+    np.testing.assert_array_equal(forces[third], 1 if mode == "conservative" else 0)
+
 def test_mechanical_engine_coupling_keeps_classical_charges(water4_system, qm):
     _, mm, _ = build(water4_system, qm, "mechanical", close_range="mechanical")
     nonbonded = next(f for f in mm.base_context.getSystem().getForces()

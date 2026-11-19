@@ -82,6 +82,9 @@ class VaspInterface(EngineEmbeddingMixin, QMInterface):
     embedding: bool = False
     embedding_sigma: float = 0.3
     pme_grid_on_qm_mesh: bool = field(default=False, init=False)
+    # False in coupling_mode="force": subsystem III keeps the force-field
+    # Coulomb from subsystem I instead of the QM density back-reaction.
+    mm_back_reaction: bool = field(default=True, init=False)
     persistent_steps: int = 1
     persistent_timeout: float = 3600.
     qm_box: Any = None
@@ -766,7 +769,7 @@ class VaspPotential(VaspInterface, AtomicPotential):
             )
             embed_indices = sorted(self.system.select("subsystem II"))
             forces[embed_indices, :] = self._read_mm_forces()
-            if self.potentials:
+            if self.potentials and self.mm_back_reaction:
                 # PMEExcluded cancels OpenMM's force-field QM charges on
                 # subsystem III, so its force from the QM density and
                 # nuclei comes from the reciprocal sum here.

@@ -90,6 +90,9 @@ class SPARCInterface(EngineEmbeddingMixin, QMInterface):
     fd_grid: tuple[int, int, int]
     embedding: bool = False
     embedding_sigma: float = 0.3
+    # False in coupling_mode="force": subsystem III keeps the force-field
+    # Coulomb from subsystem I instead of the QM density back-reaction.
+    mm_back_reaction: bool = field(default=True, init=False)
     potentials: list[ElectronicPotential] = field(
         default_factory=list, init=False,
     )
@@ -374,7 +377,7 @@ class SPARCPotential(SPARCInterface, AtomicPotential):
         if self.embedding:
             embed_indices = sorted(self.system.select("subsystem II"))
             forces[embed_indices, :] = self._read_mm_forces()
-            if self.potentials:
+            if self.potentials and self.mm_back_reaction:
                 # PMEExcluded cancels OpenMM's force-field QM charges on
                 # subsystem III, so its force from the QM density and
                 # pseudocharges comes from the reciprocal sum here.

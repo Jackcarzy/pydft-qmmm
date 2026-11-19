@@ -111,8 +111,10 @@ class QMMMHamiltonian(CouplingHamiltonian):
         pme_spline_order: The order of splines used on the FFT grid for
             QM/MM/PME.
         coupling_mode: ``"conservative"`` removes retained OpenMM energy
-            terms together with their forces. ``"force"`` preserves the
-            historical directional force-mixing behavior.
+            terms together with their forces. ``"force"`` is the original
+            directional force mixing: subsystem I feels II/III through the
+            QM embedding, while subsystem III feels I only through OpenMM
+            (LJ and force-field charges of I); not energy conserving.
     """
 
     def __init__(
@@ -346,6 +348,7 @@ class QMMMHamiltonian(CouplingHamiltonian):
                         if capability is ElectrostaticCouplingMode.PERIODIC
                         else None
                     ),
+                    mm_forces=self.coupling_mode != "force",
                 )
                 pme_calculators.append(
                     PotentialCalculator(system, pme_exclusion),
@@ -358,6 +361,13 @@ class QMMMHamiltonian(CouplingHamiltonian):
                 self.pme_spline_order,
             )
             qm_interface.add_electronic_potential(pme_electrons)
+            if self.coupling_mode == "force" and hasattr(
+                    qm_interface, "mm_back_reaction",
+            ):
+                # Original force mixing: III-I is MM.  Subsystem III keeps
+                # OpenMM's LJ and force-field Coulomb from subsystem I and
+                # does not take the QM density back-reaction.
+                object.__setattr__(qm_interface, "mm_back_reaction", False)
         if self.slab_correction:
             from pydft_qmmm.interfaces.vasp.vasp_interface import (
                 VaspInterface,
