@@ -21,6 +21,7 @@ from pydft_qmmm.plugins import Plugin
 
 if TYPE_CHECKING:
     from typing import Any
+    from pydft_qmmm.calculators import CentroidSites
     from pydft_qmmm.calculators import Calculator
     from pydft_qmmm.hamiltonians import StandaloneHamiltonian
     from pydft_qmmm.integrators import Integrator
@@ -48,6 +49,7 @@ class Simulation(Loggable):
         center: Center the QM region automatically.  Disable for a fixed
             QM origin.
         wrap: Wrap residues into the periodic box automatically.
+        virtual_sites: Optional CentroidSites mapping; requires center and wrap False.
         kwargs: Additional options to provide to the logging
             functionality, see :class:`pydft_qmmm.utils.logging.Loggable`
             for a list of options.
@@ -67,8 +69,14 @@ class Simulation(Loggable):
             plugins: list[Plugin] | None = None,
             center: bool = True,
             wrap: bool = True,
+            virtual_sites: CentroidSites | None = None,
             **kwargs: Any,
     ) -> None:
+        if virtual_sites is None and len(system.virtual_site_indices):
+            virtual_sites = system.vsite_helper
+        if virtual_sites is not None and (center or wrap):
+            raise ValueError("Dependent sites require center=False, wrap=False")
+        self.virtual_sites = virtual_sites
         # Perform logging setup
         super().__init__(**kwargs)
         self._logger = logging.Logger(__name__, level=logger.level)
@@ -82,15 +90,23 @@ class Simulation(Loggable):
             self.calculator = hamiltonian.build_calculator(system)
         else:
             raise TypeError
+        if virtual_sites is not None:
+            from pydft_qmmm.calculators.virtual_sites import VirtualSiteCalculator
+            self.calculator = VirtualSiteCalculator(system, self.calculator, virtual_sites)
+            virtual_sites.update(system)
+            system.masses[virtual_sites.indices] = 0.
         # Perform additional simulation setup.
         self._offset = np.zeros(system.positions.shape)
         if wrap and system.box.any():
             self.calculator.register_plugin(CalculatorWrap(), 0)
         if center and system.select("subsystem I"):
             self.calculator.register_plugin(CalculatorCenter(), 0)
-        if system.masses[system.masses == 0].size > 0:
+        zero_mass = np.where(system.masses.base == 0)[0]
+        if virtual_sites is not None:
+            zero_mass = np.setdiff1d(zero_mass, virtual_sites.indices)
+        if zero_mass.size > 0:
             query = "atom"
-            for atom in np.where(system.masses.base == 0)[0]:
+            for atom in zero_mass:
                 query += f" {atom}"
                 system.masses[atom] = ELEMENT_TO_MASS.get(
                     system.elements[atom],
@@ -125,6 +141,8 @@ class Simulation(Loggable):
                 )
                 self.system.positions = new_positions
                 self.system.velocities = new_velocities
+                if self.virtual_sites is not None:
+                    self.virtual_sites.update(self.system)
                 unwrapped_positions = self.system.positions.base + self._offset
                 self._logger.info(
                     "",
@@ -150,9 +168,14 @@ class Simulation(Loggable):
                 f"Nonfinite energy or forces at step {self._frame}",
             )
         self.system.forces = results.forces
-        kinetic_energy = self.integrator.compute_kinetic_energy(
-            self.system,
-        )
+        # Dependent site velocities are for output only, never thermal DOFs.
+        saved_velocities = np.array(self.system.velocities)
+        try:
+            if self.virtual_sites is not None:
+                self.system.velocities[self.virtual_sites.indices] = 0
+            kinetic_energy = self.integrator.compute_kinetic_energy(self.system)
+        finally:
+            self.system.velocities = saved_velocities
         energy = {
             "Total Energy": kinetic_energy + results.energy,
             ".": {

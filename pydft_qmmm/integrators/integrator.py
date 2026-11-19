@@ -80,14 +80,13 @@ class Integrator(ABC):
             The kinetic energy (:math:`\mathrm{kJ\;mol^{-1}}`) of the
             system.
         """
-        masses = system.masses.reshape(-1, 1)
-        velocities = (
-            system.velocities
-            + (
-                0.5*self.timestep
-                * system.forces*(10**-4)/masses
-            )
-        )
+        masses = np.asarray(system.masses.reshape(-1, 1))
+        mask = masses[:,0] != 0
+        delta_v = np.zeros_like(system.velocities)
+        forces = np.asarray(system.forces.base)
+        delta_v[mask] = 0.5*self.timestep* forces[mask,:]*(10**-4)/\
+                        masses[mask,:]
+        velocities = np.asarray(system.velocities) + delta_v
         kinetic_energy = np.sum(0.5*masses*(velocities)**2) * (10**4)
         return kinetic_energy
 

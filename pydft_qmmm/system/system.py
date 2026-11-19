@@ -107,10 +107,51 @@ class System(Sequence[_SystemAtom]):
     ) -> None:
         for name, field_ in getattr(self, "__dataclass_fields__").items():
             setattr(self, "_" + name, field_.default_factory())
+        self._virtual_sites = ()
+        from pydft_qmmm.utils.virtual_sites import VirtualSiteHelper
+        self.vsite_helper = VirtualSiteHelper(self)
         self._setup(atoms)
         self._box: ObservedArray[Any, array_float] = ObservedArray(box)
+        self.positions.register_notifier(self._update_virtual_site_positions)
+        self.box.register_notifier(lambda _: self._update_virtual_site_positions(self.positions.base))
         # Delete residue_map cached property if residues changes.
         self.residues.register_notifier(_del_attr(self, "residue_map"))
+
+    @property
+    def virtual_site_indices(self):
+        return np.array([site.index for site in self._virtual_sites], dtype=int)
+
+    @property
+    def virtual_types(self):
+        return tuple(site.site_type for site in self._virtual_sites)
+
+    @property
+    def virtual_parents(self):
+        return tuple(site.parents for site in self._virtual_sites)
+
+    @property
+    def virtual_parent_weights(self):
+        return tuple(site.parent_weights for site in self._virtual_sites)
+
+    def build_virtual_sites(self, virtual_sites):
+        """Replace site metadata; register before creating engine notifiers.
+
+        This registers geometry only. The force owner must transfer forces
+        once, accounting for whether the engine already does that transfer.
+        """
+        sites = tuple(virtual_sites)
+        self.vsite_helper._validate(sites)
+        if any(i >= len(self) for site in sites for i in (site.index, *site.parents)):
+            raise ValueError('Virtual-site index outside system')
+        self._virtual_sites = sites
+        self.masses[self.virtual_site_indices] = 0.
+        self.positions = self.vsite_helper.compute_positions(self.positions)
+
+    def _update_virtual_site_positions(self, positions):
+        if self._virtual_sites:
+            # Modify the backing array, so downstream notifiers see the update
+            # without recursively calling this notifier.
+            self.positions.base[:] = self.vsite_helper.compute_positions(positions)
 
     def __len__(self) -> int:
         """Get the number of atoms in the system.

@@ -7,3 +7,5 @@ __author__ = "John Pederson"
 from .calculator import *
 from .composite_calculator import *
 from .potential_calculator import *
+
+from .virtual_sites import CentroidSites, VirtualSiteCalculator

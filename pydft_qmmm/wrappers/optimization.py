@@ -21,6 +21,7 @@ from pydft_qmmm.plugins import CalculatorWrap
 
 if TYPE_CHECKING:
     from typing import Any
+    from pydft_qmmm.calculators import CentroidSites
     from pydft_qmmm.calculators import Calculator
     from pydft_qmmm.hamiltonians import StandaloneHamiltonian
     from pydft_qmmm.system import System
@@ -42,6 +43,9 @@ class Optimization(Loggable):
             may be provided in place of a Hamiltonian object.
         plugins: A list of plugins to apply to the calculator object
             before optimization.
+        center: Center the QM region automatically.
+        wrap: Wrap residues into the periodic box automatically.
+        virtual_sites: Dependent sites; requires center=False and wrap=False.
         kwargs: Additional options to provide to the logging
             functionality, see :class:`pydft_qmmm.utils.logging.Loggable`
             for a list of options.
@@ -60,8 +64,16 @@ class Optimization(Loggable):
             calculator: Calculator | None = None,
             plugins: list[CalculatorPlugin] | None = None,
             constraints: str | None = None,
+            center: bool = True,
+            wrap: bool = True,
+            virtual_sites: CentroidSites | None = None,
             **kwargs: Any,
     ) -> None:
+        if virtual_sites is None and len(system.virtual_site_indices):
+            virtual_sites = system.vsite_helper
+        if virtual_sites is not None and (center or wrap):
+            raise ValueError("Dependent sites require center=False, wrap=False")
+        self.virtual_sites = virtual_sites
         # Perform logging setup.
         super().__init__(**kwargs)
         for handler in self.handlers:
@@ -73,14 +85,18 @@ class Optimization(Loggable):
             self.calculator = hamiltonian.build_calculator(system)
         else:
             raise TypeError
+        if virtual_sites is not None:
+            from pydft_qmmm.calculators.virtual_sites import VirtualSiteCalculator
+            self.calculator = VirtualSiteCalculator(system, self.calculator, virtual_sites)
+            virtual_sites.update(system)
         # Perform additional simulation setup.
         self.query = query
         self.constraints = constraints
         self._offset = np.zeros(system.positions.shape)
         # Todo: See if this is desirable or necessary.
-        if system.box.any():
+        if wrap and system.box.any():
             self.calculator.register_plugin(CalculatorWrap(), 0)
-        if system.select("subsystem I"):
+        if center and system.select("subsystem I"):
             self.calculator.register_plugin(CalculatorCenter(), 0)
         self.system = system
         # Apply plugins.
@@ -99,6 +115,8 @@ class Optimization(Loggable):
                 "https://github.com/leeping/geomeTRIC",
             )
         opt_indices = sorted(self.system.select(self.query))
+        if self.virtual_sites is not None and np.intersect1d(opt_indices, self.virtual_sites.indices).size:
+            raise ValueError("Dependent sites cannot be optimization variables")
 
         # Define objective function.
         def model(x, *args):
@@ -149,9 +167,14 @@ class Optimization(Loggable):
             - self._offset[opt_indices, :]
         )
 
+        if self.virtual_sites is not None:
+            self.virtual_sites.update(self.system)
+
     def calculate_energy_forces(self) -> None:
         """Update total system energy and forces on atoms in the system.
         """
+        if self.virtual_sites is not None:
+            self.virtual_sites.update(self.system)
         unwrapped_positions = self.system.positions.base + self._offset
         logger.info(
             "",

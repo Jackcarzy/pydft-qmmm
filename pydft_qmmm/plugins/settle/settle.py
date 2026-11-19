@@ -55,7 +55,11 @@ class SETTLE(IntegratorPlugin):
             New velocities which result from the application of the
             SETTLE algorithm to system velocities.
         """
-        residues = self._get_hoh_residues(system)
+        residues = self._get_hoh_residues(
+            tuple(system.residues),
+            frozenset(system.residue_map.items()),
+            system.select,
+        )
         velocities = settle_velocities(
             residues,
             system.positions,
@@ -88,7 +92,11 @@ class SETTLE(IntegratorPlugin):
             np.array(residues)[sorted(select(self.query))],
         )
         residue_map = dict(residue_set)
-        hoh_residues = [sorted(residue_map[i]) for i in residue_indices]
+        ep_lp_indices = frozenset(select("element Ep Lp"))
+        hoh_residues = [
+            [j for j in sorted(residue_map[i]) if j not in ep_lp_indices]
+            for i in residue_indices
+        ]
         if any([len(residue) != 3 for residue in hoh_residues]):
             raise ValueError("Some SETTLE residues do not have 3 atoms")
         return hoh_residues
@@ -151,7 +159,10 @@ class SETTLE(IntegratorPlugin):
                 system.velocities
                 + (
                     0.5*self.integrator.timestep
-                    * system.forces*(10**-4)/masses
+                    * np.divide(
+                        system.forces*(10**-4), masses,
+                        out=np.zeros_like(system.forces), where=masses != 0,
+                    )
                 )
             )
             residues = self._get_hoh_residues(

@@ -11,3 +11,5 @@ from .lattice import *
 from .logging import *
 
 from .misc import *
+
+from .virtual_sites import *
