@@ -11,6 +11,7 @@ from __future__ import annotations
 __all__ = ["openmm_interface_factory"]
 
 from typing import TYPE_CHECKING
+from warnings import warn
 
 import numpy as np
 import openmm
@@ -46,8 +47,8 @@ def openmm_interface_factory(
         nonbonded_cutoff: float | int = 14.,
         pme_gridnumber: int | tuple[int, int, int] | None = None,
         pme_alpha: float | int | None = None,
-        platform: str = "CPU",
-        precision: str | None = None,
+        platform: str = "Reference",
+        precision: str | None = "double",
         lj_mixing: str = "default",
         lj_lorentz_classes: tuple[str, ...] = (),
         lj_zero_classes: tuple[str, ...] = (),
@@ -69,10 +70,12 @@ def openmm_interface_factory(
         pme_alpha: The Gaussian width parameter in Ewald summation
             (:math:`\mathrm{nm^{-1}}`).
         platform: The OpenMM platform name ("CPU", "CUDA", "OpenCL",
-            or "Reference").
+            or "Reference"). Defaults to double-precision Reference on
+            CPU. VASP/PySCF-PBC composites default to CUDA.
         precision: The OpenMM precision ("single", "mixed", or
             "double") for platforms that support it.  None keeps the
-            platform default.
+            platform default. Defaults to "double". CPU plus "double"
+            selects Reference because the CPU platform cannot provide it.
 
         lj_mixing: "default" keeps the supplied force field. "geometric"
             uses geometric LJ sigma with XML NBFixPair overrides (XML only).
@@ -370,8 +373,8 @@ def _adjust_system(
 def _build_omm_context(
         omm_system: openmm.System,
         omm_modeller: openmm.app.Modeller,
-        platform: str = "CPU",
-        precision: str | None = None,
+        platform: str = "Reference",
+        precision: str | None = "double",
 ) -> openmm.Context:
     """Build the OpenMM Context object.
 
@@ -388,10 +391,23 @@ def _build_omm_context(
         calculations, containing the System object and the specific
         platform to use.
     """
+    if precision not in (None, "single", "mixed", "double"):
+        raise ValueError(
+            "OpenMM precision must be single, mixed, double, or None",
+        )
+    if platform == "CPU" and precision == "double":
+        warn(
+            "OpenMM CPU has no double-precision mode; using the slower "
+            "Reference platform. Use precision=None to retain CPU precision.",
+            RuntimeWarning,
+        )
+        platform = "Reference"
     omm_integrator = openmm.VerletIntegrator(1. * openmm.unit.femtosecond)
     omm_platform = openmm.Platform.getPlatformByName(platform)
     properties = {}
-    if precision is not None:
+    if precision is not None and not (
+            platform == "Reference" and precision == "double"
+    ):
         if "Precision" not in omm_platform.getPropertyNames():
             raise ValueError(
                 f"OpenMM platform {platform} has no precision setting",

@@ -17,6 +17,7 @@ __all__ = [
 from abc import ABC
 from abc import abstractmethod
 from collections.abc import Iterable
+from copy import copy
 from copy import deepcopy
 from typing import Any
 from typing import TYPE_CHECKING
@@ -269,8 +270,21 @@ class CompositeHamiltonian(StandaloneHamiltonian):
         standalone = self._calculator_hamiltonians()
         coupling = self._coupling_hamiltonians()
         calculators = []
+        # Select MM defaults before constructing either OpenMM context.
+        # Copy only the options being changed so reusable Hamiltonians retain
+        # their explicit settings when combined with another engine.
+        gpu_mm_default = any(
+            h.theory_level == TheoryLevel.QM
+            and getattr(h, "interface", None) in {"vasp", "pyscf-pbc"}
+            for h in standalone
+        )
         # Build first.
         for hamiltonian in standalone:
+            if (gpu_mm_default and hamiltonian.theory_level == TheoryLevel.MM
+                    and getattr(hamiltonian, "interface", None) == "openmm"
+                    and "platform" not in hamiltonian.options):
+                hamiltonian = copy(hamiltonian)
+                hamiltonian.options = dict(hamiltonian.options, platform="CUDA")
             calculator = hamiltonian.build_calculator(system)
             calculators.append(calculator)
         calculator = CompositeCalculator(
