@@ -21,6 +21,7 @@ from pydft_qmmm.utils import KJMOL_PER_EH
 from pydft_qmmm.utils import KJMOL_PER_EV
 from ..pyscf.pyscf_backend import load_submodule
 from ..pyscf.pyscf_backend import to_numpy
+from ..pyscf.pyscf_backend import to_like
 
 # Bound the (nkpts, block, nao) AO buffer.
 GRID_BLOCK_SIZE = 16384
@@ -128,8 +129,8 @@ def ao_operator(
         scale = weights[start:stop] * potential[start:stop]
         ao_kpts = numint.eval_ao_kpts(cell, block, kpts=kpts, deriv=0)
         for index, ao in enumerate(ao_kpts):
-            ao = to_numpy(ao)
-            matrix[index] += np.einsum(
-                "gi,g,gj->ij", ao.conj(), scale, ao,
-            )
+            # sum_g conj(ao[g,i]) scale[g] ao[g,j] as one GEMM per block.
+            matrix[index] += np.asarray(to_numpy(
+                (ao.conj() * to_like(scale, ao)[:, None]).T @ ao,
+            ))
     return matrix

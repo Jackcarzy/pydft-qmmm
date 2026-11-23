@@ -30,6 +30,7 @@ from pydft_qmmm.utils import KJMOL_PER_EH
 from pydft_qmmm.utils import KJMOL_PER_EV
 from ..pyscf.pyscf_backend import load_submodule
 from ..pyscf.pyscf_backend import to_numpy
+from ..pyscf.pyscf_backend import to_like
 from .pbc_cell import valence_charges
 from .pbc_embedding import GRID_BLOCK_SIZE
 
@@ -64,18 +65,20 @@ def pulay_forces(
             cell, block, kpts=state.kpts, deriv=1,
         )
         for index, ao in enumerate(ao_kpts):
-            ao = np.asarray(to_numpy(ao))
+            # One GEMM per block (on the device for GPU4PySCF):
+            # W[g,i] = scale[g] sum_j value[g,j] dm[i,j].
             value, derivs = ao[0], ao[1:4]
+            weighted = (value @ to_like(dm[index], value).T) \
+                * to_like(scale, value)[:, None]
+            per_ao = np.asarray(to_numpy(
+                (derivs.conj() * weighted[None]).sum(axis=1).real,
+            ))
             for atom in range(cell.natm):
                 first, last = ao_slices[atom][2], ao_slices[atom][3]
                 # Basis-center derivatives change sign; bra and ket give 2 Re.
-                gradient[atom] += -2.0 * np.einsum(
-                    "xgi,g,gj,ij->x",
-                    derivs[:, :, first:last].conj(),
-                    scale,
-                    value,
-                    dm[index][first:last, :],
-                ).real / nkpts
+                gradient[atom] += -2.0 * per_ao[:, first:last].sum(
+                    axis=1,
+                ) / nkpts
     forces = np.zeros((natoms, 3))
     forces[list(state.qm_indices)] -= gradient
     return forces
@@ -148,10 +151,10 @@ def qm_density_on_grid(
         ao_kpts = numint.eval_ao_kpts(cell, block, kpts=state.kpts, deriv=0)
         density = np.zeros(len(block))
         for index, ao in enumerate(ao_kpts):
-            ao = np.asarray(to_numpy(ao))
-            density += np.einsum(
-                "gi,ij,gj->g", ao.conj(), dm[index], ao,
-            ).real / nkpts
+            # sum_ij conj(ao[g,i]) dm[i,j] ao[g,j] as one GEMM per block.
+            density += np.asarray(to_numpy(
+                (ao.conj() * (ao @ to_like(dm[index], ao).T)).sum(axis=1).real,
+            )) / nkpts
         charge[start:stop] = -density * state.weights[start:stop]
     return charge
 
