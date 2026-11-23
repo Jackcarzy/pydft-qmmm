@@ -185,8 +185,16 @@ class PySCFPBCInterface(QMInterface):
         )
         kpts = cell.make_kpts([1, 1, 1])
         dft = load_submodule(backend, "pbc.dft")
+        # Gamma only. On GPU, closed shells use real-arithmetic RKS (its
+        # gradient is much cheaper than KRKS at one k-point). CPU PySCF
+        # computes Gamma RKS gradients only with MultiGridNumInt2, so CPU and
+        # open shells keep KRKS/KUKS.
+        gamma_rks = self.multiplicity == 1 and self.device == "gpu"
         solver = dft.KUKS if self.multiplicity > 1 else dft.KRKS
-        method = solver(cell, kpts=kpts, xc=self.functional)
+        if gamma_rks:
+            method = dft.RKS(cell, xc=self.functional)
+        else:
+            method = solver(cell, kpts=kpts, xc=self.functional)
         method.conv_tol = self.conv_tol
         method.max_cycle = self.max_cycle
         if self.output_file is not None:
@@ -195,7 +203,15 @@ class PySCFPBCInterface(QMInterface):
                 method.stdout = open(self.output_file, "a")
                 method.verbose = max(self.verbose, 4)
         for key, value in self.options.items():
+            if key in ("sigma", "smearing_method"):
+                continue
             setattr(method, key, value)
+        sigma = self.options.get("sigma", 0)
+        if sigma:
+            method = method.smearing(
+                sigma=sigma,
+                method=self.options.get("smearing_method", "fermi"),
+            )
         embed_indices = tuple(sorted(self.system.select("subsystem II")))
         coords, weights = grid_coordinates(cell)
         nuclear_energy = 0.0
@@ -211,7 +227,8 @@ class PySCFPBCInterface(QMInterface):
                 backend, cell, kpts, coords, weights, potential,
             )
             core = method.get_hcore()
-            shifted = to_like(to_numpy(core) + matrix, core)
+            shift = matrix[0].real if gamma_rks else matrix
+            shifted = to_like(to_numpy(core) + shift, core)
             method.get_hcore = lambda *args, **kwargs: shifted
             nuclear_energy = _nuclear_coupling(
                 cell, potential, self.system.box,
@@ -224,11 +241,19 @@ class PySCFPBCInterface(QMInterface):
             )
         dm = method.make_rdm1()
         self.density_guess[0] = dm
+        # Grid and force helpers index the density by k-point.
+        state_dm = dm[None] if gamma_rks else dm
         return _SCFState(
-            cell, qm_indices, embed_indices, kpts, method, dm,
+            cell, qm_indices, embed_indices, kpts, method, state_dm,
             coords, weights, potential, matrix, nuclear_energy,
             tuple(self.potentials),
         )
+
+
+def _free_energy(method: Any) -> float:
+    """Return e_tot, or the Mermin free energy when smearing is on."""
+    e_free = getattr(method, "e_free", None)
+    return float(method.e_tot if e_free is None else e_free)
 
 
 class PySCFPBCPotential(PySCFPBCInterface, AtomicPotential):
@@ -238,7 +263,7 @@ class PySCFPBCPotential(PySCFPBCInterface, AtomicPotential):
         """Return the embedded QM energy (kJ/mol)."""
         state = self._scf_state()
         return (
-            float(state.method.e_tot) + state.nuclear_energy
+            _free_energy(state.method) + state.nuclear_energy
         ) * KJMOL_PER_EH
 
     def compute_forces(self) -> NDArray[np.float64]:
@@ -259,7 +284,7 @@ class PySCFPBCPotential(PySCFPBCInterface, AtomicPotential):
         """Return QM and nuclear embedding energies (kJ/mol)."""
         state = self._scf_state()
         return {
-            "Periodic QM Energy": float(state.method.e_tot) * KJMOL_PER_EH,
+            "Periodic QM Energy": _free_energy(state.method) * KJMOL_PER_EH,
             "Nuclear Embedding Energy": (
                 state.nuclear_energy * KJMOL_PER_EH
             ),

@@ -261,7 +261,7 @@ class KSCEDPBCPotential(PySCFPBCPotential):
             if key in ("sigma", "smearing_method"):
                 continue
             setattr(method, key, value)
-        if active and self.options.get("sigma", 0):
+        if self.options.get("sigma", 0):
             method = method.smearing(
                 sigma=self.options["sigma"],
                 method=self.options.get("smearing_method", "fermi"),
