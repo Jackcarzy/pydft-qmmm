@@ -98,7 +98,14 @@ def external_potential(
     mesh = tuple(int(n) for n in cell.mesh)
     total = np.zeros(len(coords))
     for potential in potentials:
-        total += np.asarray(potential.compute_potential(coords)).reshape(-1)
+        # Native-grid PME: one reciprocal-space pass gives the potential at
+        # every mesh node, instead of interpolating at N_grid points. Its
+        # transpose is used for the MM reaction forces (pbc_forces.mm_forces).
+        on_mesh = getattr(potential, "compute_potential_on_mesh", None)
+        values = None if on_mesh is None else on_mesh(mesh)
+        if values is None:
+            values = potential.compute_potential(coords)
+        total += np.asarray(values).reshape(-1)
     total += near_potential(
         system, embed_indices, mesh, box, sigma,
     ).reshape(-1)

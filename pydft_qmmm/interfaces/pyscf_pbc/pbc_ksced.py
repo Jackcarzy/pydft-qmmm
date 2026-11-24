@@ -77,6 +77,16 @@ def _functional(value: Any, label: str) -> None:
         raise ValueError(f"KSCED {label} must be a pure LDA/GGA functional")
 
 
+def _folds_external(mf: Any) -> bool:
+    """Whether this pyscf-ksced object takes the MM field as a grid potential.
+
+    Versions with KSCEDMBPBCRKS.ext_potential add it inside get_veff (fused
+    grid pass) and differentiate it in the gradient's grid term; older ones
+    need the AO operator in hcore and a separate Pulay pass.
+    """
+    return hasattr(type(mf), "ext_potential")
+
+
 @dataclass(frozen=True)
 class KSCEDPBCPotential(PySCFPBCPotential):
     """Embed active QM atoms in a density converged once on frozen QM atoms.
@@ -257,8 +267,14 @@ class KSCEDPBCPotential(PySCFPBCPotential):
             backend, "pbc.dft.gen_grid",
         ).UniformGrids(cell)
         method.conv_tol, method.max_cycle = self.conv_tol, self.max_cycle
+        if active and self.options.get("multigrid", False):
+            # GPU4PySCF multigrid for the moving A only (pyscf-ksced
+            # mono/multigrid.py); B keeps the uniform numint that stores rho_B.
+            if self.device != "gpu":
+                raise ValueError("KSCED multigrid requires device='gpu'")
+            method = method.multigrid_numint(mesh=cell.mesh)
         for key, value in self.options.items():
-            if key in ("sigma", "smearing_method"):
+            if key in ("sigma", "smearing_method", "multigrid"):
                 continue
             setattr(method, key, value)
         if self.options.get("sigma", 0):
@@ -335,13 +351,21 @@ class KSCEDPBCPotential(PySCFPBCPotential):
                 self.system, cell, self.potentials,
                 indices, self.embedding_sigma,
             )
-            matrix = ao_operator(backend, cell, kpts,
-                                 coords, weights, potential)
-            # Install AFTER KSCED wrapping. _vne_a uses super().get_hcore,
-            # so frozen B never couples to this MM field.
-            core = mf_ainb.get_hcore()
-            shifted = core + to_like(matrix[0].real, core)
-            mf_ainb.get_hcore = lambda *args, **kwargs: shifted
+            if _folds_external(mf_ainb):
+                # pyscf-ksced takes the MM field as a grid potential: it rides
+                # in the fused V pass and in the gradient's grid term, so no
+                # separate AO operator or Pulay pass is needed. It acts on A
+                # only, so frozen B never couples to this MM field.
+                mf_ainb.ext_potential = potential
+                matrix = None
+            else:
+                matrix = ao_operator(backend, cell, kpts,
+                                     coords, weights, potential)
+                # Install AFTER KSCED wrapping. _vne_a uses super().get_hcore,
+                # so frozen B never couples to this MM field.
+                core = mf_ainb.get_hcore()
+                shifted = core + to_like(matrix[0].real, core)
+                mf_ainb.get_hcore = lambda *args, **kwargs: shifted
             nuclear_energy = _nuclear_coupling(
                 cell, potential, self.system.box,
             )
@@ -376,11 +400,16 @@ class KSCEDPBCPotential(PySCFPBCPotential):
             if total_dm.ndim == 3:
                 total_dm = total_dm.sum(axis=0)
             embedding_state = replace(embedding_state, dm=total_dm[None])
-            electronic_energy = float(
-                np.einsum(
-                    "ij,ji->", total_dm, embedding_state.matrix[0],
-                ).real,
-            )
+            if embedding_state.matrix is None:
+                # Folded route: the last get_veff (the converged density)
+                # integrated rho_A * V_ext on the grid.
+                electronic_energy = float(mf_ainb.e_ext)
+            else:
+                electronic_energy = float(
+                    np.einsum(
+                        "ij,ji->", total_dm, embedding_state.matrix[0],
+                    ).real,
+                )
         return _KSCEDState(
             cell, self.active_indices, mf_ainb, dm,
             embedding_state, nuclear_energy, electronic_energy,
@@ -414,17 +443,26 @@ class KSCEDPBCPotential(PySCFPBCPotential):
         # Evaluate A's XC at its embedded density, without another SCF.
         ni = mf._numint
         nr = ni.nr_uks if state.dm.ndim == 3 else ni.nr_rks
+        # GPU4PySCF multigrid's nr_rks takes no max_memory argument.
+        import inspect
+        extra = (
+            {"max_memory": mf.max_memory}
+            if "max_memory" in inspect.signature(nr).parameters else {}
+        )
         exc_a = float(
             to_numpy(
                 nr(
                     cell, mf.grids, mf.xc, state.dm, 0, 1, mf.kpt, None,
-                    max_memory=mf.max_memory,
+                    **extra,
                 )[1],
             ),
         )
         v_b = np.asarray(to_numpy(mf.with_env.get_vne_b(cell, mf.kpt)))
         a_electrons_b_nuclei = float(np.einsum("ij,ji->", total_dm, v_b).real)
         half_j_ab = summary["ksced_coul_ab_half"]
+        # pyscf-ksced's mesh route carries B's local pseudopotential in B's
+        # potential (v_es^B); move its share back to electron-nuclear.
+        vloc_b_rho_a = float(summary.get("ksced_vloc_b_rho_a", 0.0))
         t_nad = float(to_numpy(mf.e_tnad))
         nuclear_a = float(cell.energy_nuc())
         components = {
@@ -435,8 +473,9 @@ class KSCEDPBCPotential(PySCFPBCPotential):
             "A-B Nuclear Interaction": float(mf.energy_nuc()) - nuclear_a,
             "A-B Electron-Nuclear Interaction": (
                 a_electrons_b_nuclei + summary["ksced_vne_a_rho_b"]
+                + vloc_b_rho_a
             ),
-            "A-B Hartree Interaction": 2 * half_j_ab,
+            "A-B Hartree Interaction": 2 * half_j_ab - vloc_b_rho_a,
             "Non-additive XC": summary["exc"] - t_nad - exc_a,
             "Non-additive Kinetic": t_nad,
             "Electronic Entropy Correction": (
@@ -502,10 +541,17 @@ class KSCEDPBCPotential(PySCFPBCPotential):
         if state.embedding_state is not None:
             backend = load_backend(self.device)
             embedded = state.embedding_state
-            forces += pulay_forces(backend, embedded, len(forces))
+            qm_charge = None
+            if embedded.matrix is None:
+                # Folded route: the analytic gradient already holds the
+                # external Pulay term, and left rho_A on the full mesh.
+                rho = to_numpy(state.method.grid_density_a)
+                qm_charge = -np.asarray(rho).reshape(-1) * embedded.weights
+            else:
+                forces += pulay_forces(backend, embedded, len(forces))
             forces += nuclear_forces(embedded, self.system.box, len(forces))
             forces += mm_forces(
                 backend, embedded, self.system,
-                self.embedding_sigma, len(forces),
+                self.embedding_sigma, len(forces), qm_charge=qm_charge,
             )
         return forces * KJMOL_PER_EH * BOHR_PER_ANGSTROM

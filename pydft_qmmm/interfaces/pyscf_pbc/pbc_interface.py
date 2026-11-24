@@ -10,9 +10,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from pydft_qmmm.potentials.embedding.grid_potential import (
-    spectral_value_and_gradient,
-)
 from pydft_qmmm.interfaces import ElectrostaticCouplingMode
 from pydft_qmmm.interfaces import QMInterface
 from pydft_qmmm.potentials import AtomicPotential
@@ -29,6 +26,7 @@ from .pbc_cell import valence_charges
 from .pbc_embedding import ao_operator
 from .pbc_embedding import external_potential
 from .pbc_embedding import grid_coordinates
+from .pbc_gpu_grid import spectral_value_and_gradient
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -113,6 +111,20 @@ class PySCFPBCInterface(QMInterface):
         init=False,
     )
     embedding: bool = field(default=False, init=False)
+
+    @property
+    def pme_target_grid(self) -> tuple[int, int, int] | None:
+        """Use the explicit FFT mesh for native-grid PME (as SPARC and VASP do).
+
+        With the PME grid equal to the QM mesh, the region III field is one
+        reciprocal-space pass on the mesh (PeriodicPMEElectronicPotential.
+        compute_potential_on_mesh) and the MM forces use its exact transpose.
+        A mesh derived from ke_cutoff is not known before the cell is built,
+        so that case keeps the default PME grid.
+        """
+        if self.mesh is None:
+            return None
+        return tuple(int(n) for n in self.mesh)
 
     def electrostatic_coupling_mode(self) -> ElectrostaticCouplingMode:
         """Own both electronic and nuclear QM/MM coupling."""

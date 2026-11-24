@@ -22,9 +22,6 @@ from pydft_qmmm.potentials.embedding.grid_potential import (
     contract_gaussian_gradient,
 )
 from pydft_qmmm.potentials.embedding.grid_potential import poisson_fft
-from pydft_qmmm.potentials.embedding.grid_potential import (
-    spectral_value_and_gradient,
-)
 from pydft_qmmm.utils import BOHR_PER_ANGSTROM
 from pydft_qmmm.utils import KJMOL_PER_EH
 from pydft_qmmm.utils import KJMOL_PER_EV
@@ -33,6 +30,8 @@ from ..pyscf.pyscf_backend import to_numpy
 from ..pyscf.pyscf_backend import to_like
 from .pbc_cell import valence_charges
 from .pbc_embedding import GRID_BLOCK_SIZE
+from .pbc_gpu_grid import spectral_charge_deposition
+from .pbc_gpu_grid import spectral_value_and_gradient
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -169,15 +168,12 @@ def nuclear_charge_on_grid(
     Box vectors use Å. MM sources already carry the Gaussian smoothing.
     """
     mesh = tuple(int(n) for n in state.cell.mesh)
-    miller = [np.fft.fftfreq(n) * n for n in mesh]
-    reciprocal = 2.0 * np.pi * np.linalg.inv(box).T
-    coefficients = np.zeros(mesh, dtype=complex)
     positions = np.asarray(state.cell.atom_coords()) / BOHR_PER_ANGSTROM
-    for position, charge in zip(positions, valence_charges(state.cell)):
-        projection = reciprocal @ position
-        phase = [np.exp(-1j * m * x) for m, x in zip(miller, projection)]
-        coefficients += charge * np.einsum("i,j,k->ijk", *phase)
-    return np.fft.ifftn(coefficients).real.reshape(-1)
+    # One batched contraction over atoms (on the GPU when available); same
+    # Fourier sum as the per-atom einsum it replaces.
+    return spectral_charge_deposition(
+        mesh, box, positions, valence_charges(state.cell),
+    )
 
 
 def mm_forces(
@@ -186,18 +182,25 @@ def mm_forces(
         system: System,
         sigma: float,
         natoms: int,
+        qm_charge: NDArray[np.float64] | None = None,
 ) -> NDArray[np.float64]:
     """Return MM reaction forces (Hartree/Bohr) in system atom order.
 
     Use the Gaussian-spreading adjoint for II and the forward PME instance
     for III. Nuclear charges use the grid interpolation transpose.
-    Sigma is the region II Gaussian width (Å).
+    Sigma is the region II Gaussian width (Å). qm_charge, when given, is the
+    signed electronic charge (e) per mesh point in linear order, as
+    qm_density_on_grid returns; a caller that already holds the density on
+    the mesh passes it to skip another AO pass.
     """
     cell = state.cell
     mesh = tuple(int(n) for n in cell.mesh)
     box = np.asarray(system.box, dtype=np.float64)
     forces = np.zeros((natoms, 3))
-    charge = qm_density_on_grid(backend, state)
+    if qm_charge is None:
+        charge = qm_density_on_grid(backend, state)
+    else:
+        charge = np.array(qm_charge, dtype=np.float64).reshape(-1)
     charge += nuclear_charge_on_grid(state, box)
 
     indices = list(state.embed_indices)
@@ -215,9 +218,15 @@ def mm_forces(
 
     # Nuclear reactions must transpose the same interpolation as the energy.
     for potential in state.potentials:
-        reciprocal = np.asarray(
-            potential.compute_source_forces(state.coords, charge),
-        ).copy()
+        # Native-grid PME (PME grid == QM mesh) has its own exact transpose;
+        # it must be used whenever the field came from compute_potential_on_mesh.
+        on_mesh = getattr(potential, "compute_source_forces_on_mesh", None)
+        reciprocal = None if on_mesh is None else on_mesh(
+            charge.reshape(mesh), mesh,
+        )
+        if reciprocal is None:
+            reciprocal = potential.compute_source_forces(state.coords, charge)
+        reciprocal = np.asarray(reciprocal).copy()
         reciprocal[list(state.qm_indices)] = 0.0
         forces += reciprocal / KJMOL_PER_EH / BOHR_PER_ANGSTROM
     return forces
